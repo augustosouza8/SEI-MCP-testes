@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Screenshot Generator - SEI Automation</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f5f5f5;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 30px;
+      color: #1565c0;
+    }
+
+    .instructions {
+      background: #e3f2fd;
+      padding: 16px;
+      border-radius: 8px;
+      margin-bottom: 30px;
+    }
+
+    .instructions h3 {
+      color: #1565c0;
+      margin-bottom: 8px;
+    }
+
+    .instructions ul {
+      margin-left: 20px;
+    }
+
+    .screenshots {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 30px;
+    }
+
+    .screenshot-frame {
+      background: white;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+    }
+
+    .screenshot-title {
+      background: #1565c0;
+      color: white;
+      padding: 12px 16px;
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .screenshot-content {
+      position: relative;
+    }
+
+    /* Screenshot 1: Extension Popup */
+    .screenshot-1 {
+      width: 1280px;
+      height: 800px;
+      background: linear-gradient(135deg, #1565c0 0%, #0d47a1 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+    }
+
+    .popup-preview {
+      width: 400px;
+      background: #f5f5f5;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+
+    .popup-header {
+      background: linear-gradient(135deg, #1565c0 0%, #0d47a1 100%);
+      color: white;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .popup-icon {
+      width: 40px;
+      height: 40px;
+      background: white;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+    }
+
+    .popup-title {
+      font-size: 20px;
+      font-weight: 600;
+    }
+
+    .popup-status {
+      padding: 12px 16px;
+      background: white;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 1px solid #e0e0e0;
+    }
+
+    .status-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #4caf50;
+    }
+
+    .popup-content {
+      padding: 16px;
+    }
+
+    .feature-card {
+      background: white;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+
+    .feature-card h4 {
+      color: #1565c0;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+
+    .feature-card p {
+      color: #666;
+      font-size: 13px;
+    }
+
+    .info-text {
+      position: absolute;
+      right: 60px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: white;
+      max-width: 500px;
+    }
+
+    .info-text h2 {
+      font-size: 42px;
+      margin-bottom: 20px;
+      line-height: 1.2;
+    }
+
+    .info-text p {
+      font-size: 20px;
+      opacity: 0.9;
+      line-height: 1.6;
+    }
+
+    /* Screenshot 2: SEI Interface */
+    .screenshot-2 {
+      width: 1280px;
+      height: 800px;
+      background: #f5f5f5;
+      padding: 30px;
+    }
+
+    .sei-mock {
+      background: white;
+      border-radius: 12px;
+      overflow: hidden;
+      height: 100%;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    }
+
+    .sei-header {
+      background: #1565c0;
+      color: white;
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .sei-header h2 {
+      font-size: 20px;
+    }
+
+    .sei-toolbar {
+      display: flex;
+      gap: 10px;
+    }
+
+    .sei-btn {
+      background: rgba(255,255,255,0.2);
+      border: none;
+      color: white;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .sei-body {
+      display: flex;
+      height: calc(100% - 60px);
+    }
+
+    .sei-sidebar {
+      width: 250px;
+      background: #f8f9fa;
+      padding: 20px;
+      border-right: 1px solid #e0e0e0;
+    }
+
+    .sei-menu-item {
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+      color: #333;
+    }
+
+    .sei-menu-item:hover {
+      background: white;
+    }
+
+    .sei-menu-item.active {
+      background: #1565c0;
+      color: white;
+    }
+
+    .sei-content {
+      flex: 1;
+      padding: 24px;
+    }
+
+    .sei-process-list {
+      background: white;
+      border-radius: 8px;
+      border: 1px solid #e0e0e0;
+    }
+
+    .sei-process-item {
+      padding: 16px 20px;
+      border-bottom: 1px solid #e0e0e0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .sei-process-item:last-child {
+      border-bottom: none;
+    }
+
+    .process-info h4 {
+      color: #1565c0;
+      margin-bottom: 4px;
+    }
+
+    .process-info span {
+      color: #666;
+      font-size: 13px;
+    }
+
+    .process-status {
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .process-status.pending {
+      background: #fff3e0;
+      color: #e65100;
+    }
+
+    .process-status.done {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+
+    .ai-indicator {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 12px 20px;
+      border-radius: 30px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
+    }
+
+    /* Screenshot 3: Features */
+    .screenshot-3 {
+      width: 1280px;
+      height: 800px;
+      background: linear-gradient(135deg, #1565c0 0%, #0d47a1 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 60px;
+      color: white;
+    }
+
+    .features-title {
+      font-size: 42px;
+      margin-bottom: 50px;
+      text-align: center;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 30px;
+      max-width: 1100px;
+    }
+
+    .feature-box {
+      background: rgba(255,255,255,0.1);
+      border-radius: 16px;
+      padding: 30px;
+      text-align: center;
+      backdrop-filter: blur(10px);
+    }
+
+    .feature-icon {
+      width: 70px;
+      height: 70px;
+      background: rgba(255,255,255,0.2);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 20px;
+      font-size: 32px;
+    }
+
+    .feature-box h4 {
+      font-size: 20px;
+      margin-bottom: 12px;
+    }
+
+    .feature-box p {
+      font-size: 14px;
+      opacity: 0.8;
+      line-height: 1.5;
+    }
+
+    /* Screenshot 4: Pricing */
+    .screenshot-4 {
+      width: 1280px;
+      height: 800px;
+      background: #f8f9fa;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+    }
+
+    .pricing-title {
+      font-size: 36px;
+      color: #1565c0;
+      margin-bottom: 40px;
+      text-align: center;
+    }
+
+    .pricing-cards {
+      display: flex;
+      gap: 30px;
+    }
+
+    .pricing-card {
+      width: 320px;
+      background: white;
+      border-radius: 16px;
+      padding: 30px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+      position: relative;
+    }
+
+    .pricing-card.featured {
+      transform: scale(1.05);
+      border: 3px solid #1565c0;
+    }
+
+    .pricing-card.featured::before {
+      content: 'Mais Popular';
+      position: absolute;
+      top: -14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1565c0;
+      color: white;
+      padding: 6px 20px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .pricing-name {
+      font-size: 24px;
+      font-weight: 600;
+      color: #1565c0;
+      margin-bottom: 8px;
+    }
+
+    .pricing-description {
+      color: #666;
+      font-size: 14px;
+      margin-bottom: 20px;
+    }
+
+    .pricing-price {
+      font-size: 42px;
+      font-weight: bold;
+      color: #333;
+    }
+
+    .pricing-price span {
+      font-size: 16px;
+      font-weight: normal;
+      color: #666;
+    }
+
+    .pricing-features {
+      list-style: none;
+      margin: 20px 0;
+    }
+
+    .pricing-features li {
+      padding: 8px 0;
+      color: #555;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .pricing-features li::before {
+      content: '✓';
+      color: #4caf50;
+      font-weight: bold;
+    }
+
+    .pricing-button {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .pricing-button.primary {
+      background: #1565c0;
+      color: white;
+    }
+
+    .pricing-button.secondary {
+      background: #f5f5f5;
+      color: #333;
+    }
+
+    /* Screenshot 5: AI Assistant */
+    .screenshot-5 {
+      width: 1280px;
+      height: 800px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 60px;
+    }
+
+    .ai-demo {
+      display: flex;
+      gap: 60px;
+      align-items: center;
+    }
+
+    .ai-text {
+      color: white;
+      max-width: 450px;
+    }
+
+    .ai-text h2 {
+      font-size: 40px;
+      margin-bottom: 20px;
+      line-height: 1.2;
+    }
+
+    .ai-text p {
+      font-size: 18px;
+      opacity: 0.9;
+      line-height: 1.6;
+      margin-bottom: 30px;
+    }
+
+    .ai-features {
+      list-style: none;
+    }
+
+    .ai-features li {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      font-size: 16px;
+    }
+
+    .ai-features li::before {
+      content: '→';
+      font-size: 20px;
+    }
+
+    .ai-preview {
+      background: white;
+      border-radius: 16px;
+      width: 500px;
+      overflow: hidden;
+      box-shadow: 0 30px 80px rgba(0,0,0,0.3);
+    }
+
+    .ai-preview-header {
+      background: #1565c0;
+      color: white;
+      padding: 16px 20px;
+      font-weight: 600;
+    }
+
+    .ai-preview-content {
+      padding: 20px;
+    }
+
+    .ai-message {
+      margin-bottom: 16px;
+    }
+
+    .ai-message.user {
+      text-align: right;
+    }
+
+    .ai-message .bubble {
+      display: inline-block;
+      padding: 12px 18px;
+      border-radius: 18px;
+      max-width: 80%;
+      font-size: 14px;
+    }
+
+    .ai-message.user .bubble {
+      background: #1565c0;
+      color: white;
+    }
+
+    .ai-message.assistant .bubble {
+      background: #f5f5f5;
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Screenshots para Chrome Web Store - SEI Automation</h1>
+
+    <div class="instructions">
+      <h3>Instrucoes para gerar screenshots:</h3>
+      <ul>
+        <li>Use a ferramenta de screenshot do navegador (DevTools > More tools > Capture screenshot)</li>
+        <li>Cada frame tem 1280x800px (dimensao recomendada pela Chrome Web Store)</li>
+        <li>Salve como PNG para melhor qualidade</li>
+        <li>Nomeie os arquivos como: screenshot-1.png, screenshot-2.png, etc.</li>
+      </ul>
+    </div>
+
+    <div class="screenshots">
+      <!-- Screenshot 1: Popup Preview -->
+      <div class="screenshot-frame">
+        <div class="screenshot-title">Screenshot 1: Interface da Extensao (1280x800)</div>
+        <div class="screenshot-content">
+          <div class="screenshot-1">
+            <div class="popup-preview">
+              <div class="popup-header">
+                <div class="popup-icon">📋</div>
+                <div class="popup-title">SEI Automation</div>
+              </div>
+              <div class="popup-status">
+                <div class="status-dot"></div>
+                <span>Conectado ao SEI</span>
+              </div>
+              <div class="popup-content">
+                <div class="feature-card">
+                  <h4>Automacao de Processos</h4>
+                  <p>Crie e tramite processos automaticamente</p>
+                </div>
+                <div class="feature-card">
+                  <h4>Integracao com IA</h4>
+                  <p>Use Claude ou ChatGPT para gerar documentos</p>
+                </div>
+                <div class="feature-card">
+                  <h4>Extracao de Dados</h4>
+                  <p>Extraia informacoes de processos em massa</p>
+                </div>
+              </div>
+            </div>
+            <div class="info-text">
+              <h2>Automatize o SEI com IA</h2>
+              <p>Reduza horas de trabalho manual para minutos com automacao inteligente.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Screenshot 2: SEI Interface -->
+      <div class="screenshot-frame">
+        <div class="screenshot-title">Screenshot 2: Interface SEI com Automacao (1280x800)</div>
+        <div class="screenshot-content">
+          <div class="screenshot-2">
+            <div class="sei-mock">
+              <div class="sei-header">
+                <h2>SEI - Sistema Eletronico de Informacoes</h2>
+                <div class="sei-toolbar">
+                  <button class="sei-btn">Novo Processo</button>
+                  <button class="sei-btn">Pesquisar</button>
+                  <button class="sei-btn">Relatorios</button>
+                </div>
+              </div>
+              <div class="sei-body">
+                <div class="sei-sidebar">
+                  <div class="sei-menu-item active">📥 Caixa de Entrada</div>
+                  <div class="sei-menu-item">📤 Enviados</div>
+                  <div class="sei-menu-item">📁 Processos Gerados</div>
+                  <div class="sei-menu-item">⏰ Acompanhamento</div>
+                  <div class="sei-menu-item">📊 Estatisticas</div>
+                </div>
+                <div class="sei-content">
+                  <div class="sei-process-list">
+                    <div class="sei-process-item">
+                      <div class="process-info">
+                        <h4>00000.000123/2024-45</h4>
+                        <span>Solicitacao de Recursos - CGTI</span>
+                      </div>
+                      <span class="process-status pending">Pendente</span>
+                    </div>
+                    <div class="sei-process-item">
+                      <div class="process-info">
+                        <h4>00000.000456/2024-78</h4>
+                        <span>Contratacao Emergencial - SAD</span>
+                      </div>
+                      <span class="process-status done">Concluido</span>
+                    </div>
+                    <div class="sei-process-item">
+                      <div class="process-info">
+                        <h4>00000.000789/2024-12</h4>
+                        <span>Memorando Circular - GABINETE</span>
+                      </div>
+                      <span class="process-status pending">Em analise</span>
+                    </div>
+                    <div class="sei-process-item">
+                      <div class="process-info">
+                        <h4>00000.000321/2024-65</h4>
+                        <span>Pedido de Ferias - RH</span>
+                      </div>
+                      <span class="process-status done">Aprovado</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="ai-indicator">
+              <span>🤖</span>
+              <span>IA Ativa - 23 tarefas automatizadas hoje</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Screenshot 3: Features -->
+      <div class="screenshot-frame">
+        <div class="screenshot-title">Screenshot 3: Funcionalidades (1280x800)</div>
+        <div class="screenshot-content">
+          <div class="screenshot-3">
+            <h2 class="features-title">Recursos que Transformam seu Trabalho</h2>
+            <div class="features-grid">
+              <div class="feature-box">
+                <div class="feature-icon">📄</div>
+                <h4>Criacao de Processos</h4>
+                <p>Crie processos automaticamente com templates pre-definidos</p>
+              </div>
+              <div class="feature-box">
+                <div class="feature-icon">🔄</div>
+                <h4>Tramitacao em Lote</h4>
+                <p>Tramite dezenas de processos de uma so vez</p>
+              </div>
+              <div class="feature-box">
+                <div class="feature-icon">📊</div>
+                <h4>Extracao de Dados</h4>
+                <p>Exporte dados de processos para planilhas</p>
+              </div>
+              <div class="feature-box">
+                <div class="feature-icon">🤖</div>
+                <h4>IA Integrada</h4>
+                <p>Geracao automatica de documentos com Claude/GPT</p>
+              </div>
+              <div class="feature-box">
+                <div class="feature-icon">⏱️</div>
+                <h4>Agendamento</h4>
+                <p>Agende tarefas para execucao automatica</p>
+              </div>
+              <div class="feature-box">
+                <div class="feature-icon">🔔</div>
+                <h4>Notificacoes</h4>
+                <p>Receba alertas de prazos e movimentacoes</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Screenshot 4: Pricing -->
+      <div class="screenshot-frame">
+        <div class="screenshot-title">Screenshot 4: Planos e Precos (1280x800)</div>
+        <div class="screenshot-content">
+          <div class="screenshot-4">
+            <h2 class="pricing-title">Planos para Todos os Tamanhos</h2>
+            <div class="pricing-cards">
+              <div class="pricing-card">
+                <div class="pricing-name">Gratuito</div>
+                <div class="pricing-description">Para experimentar</div>
+                <div class="pricing-price">R$ 0<span>/mes</span></div>
+                <ul class="pricing-features">
+                  <li>7 dias de teste</li>
+                  <li>50 operacoes/dia</li>
+                  <li>Automacao basica</li>
+                  <li>Suporte via comunidade</li>
+                </ul>
+                <button class="pricing-button secondary">Comecar Gratis</button>
+              </div>
+              <div class="pricing-card featured">
+                <div class="pricing-name">Profissional</div>
+                <div class="pricing-description">Para servidores</div>
+                <div class="pricing-price">R$ 97<span>/mes</span></div>
+                <ul class="pricing-features">
+                  <li>Operacoes ilimitadas</li>
+                  <li>IA integrada (Claude/GPT)</li>
+                  <li>Suporte por email</li>
+                  <li>Templates ilimitados</li>
+                  <li>Historico de 90 dias</li>
+                </ul>
+                <button class="pricing-button primary">Assinar Agora</button>
+              </div>
+              <div class="pricing-card">
+                <div class="pricing-name">Orgao</div>
+                <div class="pricing-description">Para equipes</div>
+                <div class="pricing-price">R$ 297<span>/mes</span></div>
+                <ul class="pricing-features">
+                  <li>Ate 5 usuarios</li>
+                  <li>API dedicada</li>
+                  <li>Suporte prioritario</li>
+                  <li>Dashboard de uso</li>
+                  <li>Relatorios gerenciais</li>
+                </ul>
+                <button class="pricing-button secondary">Falar com Vendas</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Screenshot 5: AI Assistant -->
+      <div class="screenshot-frame">
+        <div class="screenshot-title">Screenshot 5: Integracao com IA (1280x800)</div>
+        <div class="screenshot-content">
+          <div class="screenshot-5">
+            <div class="ai-demo">
+              <div class="ai-text">
+                <h2>Assistente com Inteligencia Artificial</h2>
+                <p>Use linguagem natural para automatizar tarefas no SEI.</p>
+                <ul class="ai-features">
+                  <li>Criacao de documentos por voz/texto</li>
+                  <li>Resumo automatico de processos</li>
+                  <li>Sugestoes de despachos</li>
+                  <li>Analise de prazos</li>
+                </ul>
+              </div>
+              <div class="ai-preview">
+                <div class="ai-preview-header">Assistente SEI</div>
+                <div class="ai-preview-content">
+                  <div class="ai-message user">
+                    <div class="bubble">Crie um memorando para a CGTI solicitando 5 computadores</div>
+                  </div>
+                  <div class="ai-message assistant">
+                    <div class="bubble">Memorando criado! Incluí a justificativa padrão de substituição de equipamentos obsoletos. Deseja revisar antes de assinar?</div>
+                  </div>
+                  <div class="ai-message user">
+                    <div class="bubble">Sim, adicione urgencia e envie para aprovacao do diretor</div>
+                  </div>
+                  <div class="ai-message assistant">
+                    <div class="bubble">Pronto! Adicionei o carimbo de urgência e encaminhei para a caixa do Diretor. Processo: 00000.001234/2024-56</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

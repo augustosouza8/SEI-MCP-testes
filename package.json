@@ -1,0 +1,42 @@
+{
+  "name": "sei-mcp",
+  "version": "1.0.0",
+  "description": "MCP server + Chrome extension para automação do sistema SEI!",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "sei-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "dev": "tsup src/index.ts --format esm --watch",
+    "start": "node dist/index.js",
+    "lint": "eslint src --ext .ts",
+    "test": "vitest"
+  },
+  "keywords": [
+    "mcp",
+    "sei",
+    "automation",
+    "chrome-extension",
+    "governo"
+  ],
+  "author": "Nicholas Jacob",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.8.0",
+    "ws": "^8.18.0",
+    "zod": "^3.24.0",
+    "zod-to-json-schema": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/ws": "^8.5.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

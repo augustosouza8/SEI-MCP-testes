@@ -1,0 +1,377 @@
+import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+import type { SeiWebSocketServer } from '../websocket/server.js';
+import type { ToolResult } from '../types/index.js';
+import { logger } from '../utils/logger.js';
+
+// Schemas de entrada das ferramentas
+export const schemas = {
+  sei_login: z.object({
+    url: z.string().url().describe('URL base do SEI (ex: https://sei.sp.gov.br)'),
+    username: z.string().describe('Nome de usuário'),
+    password: z.string().describe('Senha do usuário'),
+    orgao: z.string().optional().describe('Órgão (se necessário selecionar)'),
+  }),
+
+  sei_search_process: z.object({
+    query: z.string().describe('Termo de busca (número do processo ou texto)'),
+    type: z.enum(['numero', 'texto', 'interessado', 'assunto']).default('numero').describe('Tipo de busca'),
+    limit: z.number().default(10).describe('Número máximo de resultados'),
+  }),
+
+  sei_download_process: z.object({
+    process_number: z.string().describe('Número do processo (ex: 12345.678901/2024-00)'),
+    include_attachments: z.boolean().default(true).describe('Incluir anexos'),
+    output_path: z.string().optional().describe('Caminho para salvar o arquivo'),
+  }),
+
+  sei_list_documents: z.object({
+    process_number: z.string().describe('Número do processo'),
+  }),
+
+  sei_create_document: z.object({
+    process_number: z.string().describe('Número do processo'),
+    document_type: z.string().describe('Tipo do documento (ex: Ofício, Despacho)'),
+    content: z.string().describe('Conteúdo do documento em HTML'),
+    description: z.string().optional().describe('Descrição/título do documento'),
+    nivel_acesso: z.enum(['publico', 'restrito', 'sigiloso']).default('publico'),
+    hipotese_legal: z.string().optional().describe('Hipótese legal (obrigatório se restrito/sigiloso)'),
+  }),
+
+  sei_sign_document: z.object({
+    document_id: z.string().describe('ID do documento no SEI'),
+    password: z.string().describe('Senha para assinatura'),
+    cargo: z.string().optional().describe('Cargo para assinatura'),
+  }),
+
+  sei_forward_process: z.object({
+    process_number: z.string().describe('Número do processo'),
+    target_unit: z.string().describe('Unidade de destino'),
+    keep_open: z.boolean().default(false).describe('Manter aberto na unidade atual'),
+    deadline: z.number().optional().describe('Prazo em dias'),
+    note: z.string().optional().describe('Observação para tramitação'),
+  }),
+
+  sei_get_status: z.object({
+    process_number: z.string().describe('Número do processo'),
+    include_history: z.boolean().default(true).describe('Incluir histórico completo'),
+  }),
+
+  sei_screenshot: z.object({
+    full_page: z.boolean().default(false).describe('Capturar página inteira'),
+  }),
+
+  sei_snapshot: z.object({
+    include_hidden: z.boolean().default(false).describe('Incluir elementos ocultos'),
+  }),
+};
+
+// Definição das ferramentas
+export const tools = [
+  {
+    name: 'sei_login',
+    description: 'Faz login no sistema SEI com usuário e senha. Deve ser chamado antes de outras operações.',
+    inputSchema: zodToJsonSchema(schemas.sei_login),
+  },
+  {
+    name: 'sei_search_process',
+    description: 'Busca processos no SEI por número, texto, interessado ou assunto.',
+    inputSchema: zodToJsonSchema(schemas.sei_search_process),
+  },
+  {
+    name: 'sei_download_process',
+    description: 'Baixa processo completo como PDF, opcionalmente incluindo anexos.',
+    inputSchema: zodToJsonSchema(schemas.sei_download_process),
+  },
+  {
+    name: 'sei_list_documents',
+    description: 'Lista todos os documentos de um processo específico.',
+    inputSchema: zodToJsonSchema(schemas.sei_list_documents),
+  },
+  {
+    name: 'sei_create_document',
+    description: 'Cria um novo documento em um processo existente.',
+    inputSchema: zodToJsonSchema(schemas.sei_create_document),
+  },
+  {
+    name: 'sei_sign_document',
+    description: 'Assina eletronicamente um documento no SEI.',
+    inputSchema: zodToJsonSchema(schemas.sei_sign_document),
+  },
+  {
+    name: 'sei_forward_process',
+    description: 'Tramita processo para outra unidade.',
+    inputSchema: zodToJsonSchema(schemas.sei_forward_process),
+  },
+  {
+    name: 'sei_get_status',
+    description: 'Consulta andamento e histórico de tramitações do processo.',
+    inputSchema: zodToJsonSchema(schemas.sei_get_status),
+  },
+  {
+    name: 'sei_screenshot',
+    description: 'Captura screenshot da página atual do SEI.',
+    inputSchema: zodToJsonSchema(schemas.sei_screenshot),
+  },
+  {
+    name: 'sei_snapshot',
+    description: 'Captura estado da página (árvore de acessibilidade ARIA) para análise.',
+    inputSchema: zodToJsonSchema(schemas.sei_snapshot),
+  },
+];
+
+// Session management tools (handled server-side)
+const SESSION_TOOLS = [
+  'sei_list_sessions',
+  'sei_get_session_info',
+  'sei_close_session',
+  'sei_switch_session',
+  'sei_get_connection_status',
+];
+
+// Window control tools (forwarded to Chrome extension)
+const WINDOW_TOOLS = [
+  'sei_minimize_window',
+  'sei_restore_window',
+  'sei_focus_window',
+  'sei_get_window_state',
+  'sei_set_window_bounds',
+];
+
+// Handler das ferramentas
+export async function handleTool(
+  name: string,
+  args: Record<string, unknown>,
+  wsServer: SeiWebSocketServer
+): Promise<ToolResult> {
+  logger.info(`Executing tool: ${name}`, args);
+
+  // Handle session management tools (server-side, no extension needed)
+  if (SESSION_TOOLS.includes(name)) {
+    return handleSessionTool(name, args, wsServer);
+  }
+
+  // For all other tools, check connection first
+  const sessionId = args.session_id as string | undefined;
+  if (!wsServer.isConnected(sessionId)) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Erro: Extensão do Chrome não conectada${sessionId ? ` para sessão ${sessionId}` : ''}. Por favor:\n1. Abra o SEI no Chrome\n2. Clique no ícone da extensão SEI-MCP\n3. Clique em "Conectar"`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  try {
+    const response = await wsServer.sendCommand(name, args, sessionId);
+
+    if (!response.success) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Erro: ${response.error?.message || 'Erro desconhecido'}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    // Formatar resposta baseado no tipo de ferramenta
+    if (name === 'sei_screenshot' && response.data) {
+      const data = response.data as { image: string; mimeType: string };
+      return {
+        content: [
+          {
+            type: 'image',
+            data: data.image,
+            mimeType: data.mimeType || 'image/png',
+          },
+        ],
+      };
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: typeof response.data === 'string'
+            ? response.data
+            : JSON.stringify(response.data, null, 2),
+        },
+      ],
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Erro desconhecido';
+    logger.error(`Tool error: ${name}`, { error: message });
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Erro ao executar ${name}: ${message}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+}
+
+// Handle session management tools
+function handleSessionTool(
+  name: string,
+  args: Record<string, unknown>,
+  wsServer: SeiWebSocketServer
+): ToolResult {
+  try {
+    switch (name) {
+      case 'sei_list_sessions': {
+        const sessions = wsServer.listSessions();
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                total: sessions.length,
+                connected: wsServer.getConnectedCount(),
+                sessions,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'sei_get_session_info': {
+        const sessionId = args.session_id as string | undefined;
+        const sessions = wsServer.listSessions();
+        const session = sessionId
+          ? sessions.find(s => s.id === sessionId)
+          : sessions.find(s => s.status === 'connected');
+
+        if (!session) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Sessão não encontrada: ${sessionId || 'default'}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(session, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'sei_close_session': {
+        const sessionId = args.session_id as string;
+        if (!sessionId) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Erro: session_id é obrigatório',
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const closed = wsServer.closeSession(sessionId);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: closed
+                ? `Sessão ${sessionId} fechada com sucesso`
+                : `Sessão ${sessionId} não encontrada`,
+            },
+          ],
+          isError: !closed,
+        };
+      }
+
+      case 'sei_switch_session': {
+        // This is a client-side hint - we just validate the session exists
+        const sessionId = args.session_id as string;
+        if (!wsServer.isConnected(sessionId)) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Sessão ${sessionId} não está conectada`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Sessão ativa: ${sessionId}`,
+            },
+          ],
+        };
+      }
+
+      case 'sei_get_connection_status': {
+        const sessionId = args.session_id as string | undefined;
+        const isConnected = wsServer.isConnected(sessionId);
+        const sessions = wsServer.listSessions();
+        const session = sessionId
+          ? sessions.find(s => s.id === sessionId)
+          : sessions.find(s => s.status === 'connected');
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                connected: isConnected,
+                sessionId: session?.id || null,
+                status: session?.status || 'disconnected',
+                lastActivity: session?.lastActivity || null,
+                totalSessions: sessions.length,
+                connectedSessions: wsServer.getConnectedCount(),
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      default:
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Ferramenta de sessão desconhecida: ${name}`,
+            },
+          ],
+          isError: true,
+        };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Erro desconhecido';
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Erro ao executar ${name}: ${message}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+}
