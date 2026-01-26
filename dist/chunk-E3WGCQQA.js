@@ -1118,7 +1118,9 @@ var schemas2 = {
     url: z2.string().url().describe("URL base do SEI (ex: https://sei.sp.gov.br)"),
     username: z2.string().describe("Nome de usu\xE1rio"),
     password: z2.string().describe("Senha do usu\xE1rio"),
-    orgao: z2.string().optional().describe("\xD3rg\xE3o (se necess\xE1rio selecionar)")
+    orgao: z2.string().optional().describe("\xD3rg\xE3o (se necess\xE1rio selecionar)"),
+    headless: z2.boolean().optional().describe("Executar em modo headless (sem janela vis\xEDvel). Padr\xE3o: usa configura\xE7\xE3o do servidor"),
+    persistent: z2.boolean().optional().describe("Manter sess\xE3o persistente (cookies/login salvos). Padr\xE3o: usa configura\xE7\xE3o do servidor")
   }),
   sei_search_process: z2.object({
     query: z2.string().describe("Termo de busca (n\xFAmero do processo ou texto)"),
@@ -1785,6 +1787,8 @@ var SeiPlaywrightManager = class {
     return state;
   }
   async login(args) {
+    const resolvedHeadless = args.headless ?? this.headlessDefault;
+    const resolvedPersistent = args.persistent ?? this.persistentDefault;
     if (args.session_id) {
       const existing = this.sessions.get(args.session_id);
       if (existing) {
@@ -1793,7 +1797,7 @@ var SeiPlaywrightManager = class {
           if (page && typeof args.timeout_ms === "number") page.setDefaultTimeout(args.timeout_ms);
           try {
             const ok = await s.client.login(args.username, args.password, args.orgao);
-            return { session_id: s.id, logged_in: ok, baseUrl: s.baseUrl };
+            return { session_id: s.id, logged_in: ok, baseUrl: s.baseUrl, headless: resolvedHeadless };
           } finally {
             if (page) page.setDefaultTimeout(s.defaultTimeoutMs);
           }
@@ -1805,11 +1809,13 @@ var SeiPlaywrightManager = class {
       username: args.username,
       password: args.password,
       orgao: args.orgao,
+      headless: resolvedHeadless,
+      persistent: resolvedPersistent,
       timeoutMs: typeof args.timeout_ms === "number" ? args.timeout_ms : void 0
     });
     return this.runExclusive(session.id, async (s) => {
       const ok = await s.client.login(args.username, args.password, args.orgao);
-      return { session_id: s.id, logged_in: ok, baseUrl: s.baseUrl };
+      return { session_id: s.id, logged_in: ok, baseUrl: s.baseUrl, headless: resolvedHeadless };
     });
   }
   async executeTool(name, args, sessionId) {
@@ -1820,7 +1826,9 @@ var SeiPlaywrightManager = class {
         password: args.password,
         orgao: args.orgao,
         session_id: sessionId,
-        timeout_ms: args.timeout_ms
+        timeout_ms: args.timeout_ms,
+        headless: args.headless,
+        persistent: args.persistent
       });
     }
     const s = this.getSession(sessionId);

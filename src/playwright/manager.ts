@@ -222,7 +222,12 @@ export class SeiPlaywrightManager {
     orgao?: string;
     session_id?: string;
     timeout_ms?: number;
-  }): Promise<{ session_id: string; logged_in: boolean; baseUrl: string }> {
+    headless?: boolean;
+    persistent?: boolean;
+  }): Promise<{ session_id: string; logged_in: boolean; baseUrl: string; headless: boolean }> {
+    const resolvedHeadless = args.headless ?? this.headlessDefault;
+    const resolvedPersistent = args.persistent ?? this.persistentDefault;
+
     // Reuse session if provided, otherwise create fresh
     if (args.session_id) {
       const existing = this.sessions.get(args.session_id);
@@ -232,7 +237,7 @@ export class SeiPlaywrightManager {
           if (page && typeof args.timeout_ms === 'number') page.setDefaultTimeout(args.timeout_ms);
           try {
             const ok = await s.client.login(args.username, args.password, args.orgao);
-            return { session_id: s.id, logged_in: ok, baseUrl: s.baseUrl };
+            return { session_id: s.id, logged_in: ok, baseUrl: s.baseUrl, headless: resolvedHeadless };
           } finally {
             if (page) page.setDefaultTimeout(s.defaultTimeoutMs);
           }
@@ -245,12 +250,14 @@ export class SeiPlaywrightManager {
       username: args.username,
       password: args.password,
       orgao: args.orgao,
+      headless: resolvedHeadless,
+      persistent: resolvedPersistent,
       timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
     });
 
     return this.runExclusive(session.id, async (s) => {
       const ok = await s.client.login(args.username, args.password, args.orgao);
-      return { session_id: s.id, logged_in: ok, baseUrl: s.baseUrl };
+      return { session_id: s.id, logged_in: ok, baseUrl: s.baseUrl, headless: resolvedHeadless };
     });
   }
 
@@ -268,6 +275,8 @@ export class SeiPlaywrightManager {
         orgao: args.orgao as string | undefined,
         session_id: sessionId,
         timeout_ms: args.timeout_ms as number | undefined,
+        headless: args.headless as boolean | undefined,
+        persistent: args.persistent as boolean | undefined,
       });
     }
 

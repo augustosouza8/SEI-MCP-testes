@@ -40,6 +40,8 @@ export const schemas = {
     username: z.string().describe('Nome de usuário'),
     password: z.string().describe('Senha do usuário'),
     orgao: z.string().optional().describe('Órgão (se necessário selecionar)'),
+    headless: z.boolean().optional().describe('Executar em modo headless (sem janela visível). Padrão: usa configuração do servidor'),
+    persistent: z.boolean().optional().describe('Manter sessão persistente (cookies/login salvos). Padrão: usa configuração do servidor'),
   }),
 
   sei_search_process: z.object({
