@@ -36,9 +36,13 @@ import { renderPricingPage } from './http/pages.js';
 
 const HTTP_PORT = parseInt(process.env.PORT || process.env.SEI_MCP_HTTP_PORT || '3100', 10);
 const WS_PORT = parseInt(process.env.SEI_MCP_WS_PORT || '19999', 10);
-const DRIVER = ((process.env.SEI_MCP_DRIVER || 'extension').toLowerCase() === 'playwright')
-  ? 'playwright'
-  : 'extension';
+
+// Driver modes: 'both' (default), 'playwright', 'extension'
+// 'both' enables both drivers - extension via WebSocket, playwright for direct automation
+const DRIVER_ENV = (process.env.SEI_MCP_DRIVER || 'both').toLowerCase();
+const DRIVER: 'both' | 'playwright' | 'extension' =
+  DRIVER_ENV === 'playwright' ? 'playwright' :
+  DRIVER_ENV === 'extension' ? 'extension' : 'both';
 
 // Allowed origins for CORS (extensões Chrome)
 const ALLOWED_ORIGINS = [
@@ -121,13 +125,18 @@ async function fetchGoogleUserInfo(accessToken: string): Promise<{ id?: string; 
 
 export async function runHttpServer(): Promise<void> {
   // Criar servidor WebSocket para comunicação com extensão SEI
+  // Start WebSocket server for extension connections (unless playwright-only mode)
   const wsServer = new SeiWebSocketServer(WS_PORT);
-  if (DRIVER === 'extension') {
+  if (DRIVER === 'both' || DRIVER === 'extension') {
     await wsServer.start();
-  } else {
-    logger.info('Driver Playwright ativo; WebSocket da extensão não é necessário (não será iniciado).');
+    logger.info(`WebSocket server started on port ${WS_PORT} for Chrome extension connections`);
   }
+
+  // Always create Playwright manager (lazy initialization on first use)
   const pwManager = new SeiPlaywrightManager();
+  if (DRIVER === 'both' || DRIVER === 'playwright') {
+    logger.info('Playwright driver enabled for direct browser automation');
+  }
 
   // Map de transports por sessão
   const transports = new Map<string, StreamableHTTPServerTransport>();
@@ -260,6 +269,9 @@ export async function runHttpServer(): Promise<void> {
 
     // Health check
     if (url.pathname === '/health' || url.pathname === '/') {
+      const extensionConnections = (DRIVER === 'both' || DRIVER === 'extension') ? wsServer.getConnectedCount() : 0;
+      const playwrightSessions = (DRIVER === 'both' || DRIVER === 'playwright') ? pwManager.getConnectedCount() : 0;
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         status: 'ok',
@@ -267,9 +279,19 @@ export async function runHttpServer(): Promise<void> {
         version: '1.0.0',
         mode: 'http',
         driver: DRIVER,
-        wsPort: WS_PORT,
+        drivers: {
+          extension: {
+            enabled: DRIVER === 'both' || DRIVER === 'extension',
+            wsPort: WS_PORT,
+            connections: extensionConnections,
+          },
+          playwright: {
+            enabled: DRIVER === 'both' || DRIVER === 'playwright',
+            sessions: playwrightSessions,
+          },
+        },
         tools: toolCount,
-        connections: DRIVER === 'extension' ? wsServer.getConnectedCount() : pwManager.getConnectedCount(),
+        totalConnections: extensionConnections + playwrightSessions,
       }));
       return;
     }
@@ -426,14 +448,21 @@ export async function runHttpServer(): Promise<void> {
     logger.info('='.repeat(50));
     logger.info(`MCP endpoint: http://localhost:${HTTP_PORT}/mcp`);
     logger.info(`Health check: http://localhost:${HTTP_PORT}/health`);
-    logger.info(`Driver: ${DRIVER}`);
-    if (DRIVER === 'extension') logger.info(`WebSocket for Chrome extension: ws://localhost:${WS_PORT}`);
+    logger.info(`Driver mode: ${DRIVER}`);
+    if (DRIVER === 'both' || DRIVER === 'extension') {
+      logger.info(`  - Extension: WebSocket on ws://localhost:${WS_PORT}`);
+    }
+    if (DRIVER === 'both' || DRIVER === 'playwright') {
+      logger.info(`  - Playwright: Direct browser automation enabled`);
+    }
     logger.info(`Pricing: http://localhost:${HTTP_PORT}/pricing`);
     logger.info(`Available tools: ${toolCount}`);
     logger.info('='.repeat(50));
-    logger.info('');
-    logger.info('Para conectar a extensão mcp-chrome:');
-    logger.info(`  URL: http://localhost:${HTTP_PORT}/mcp`);
+    if (DRIVER === 'both' || DRIVER === 'extension') {
+      logger.info('');
+      logger.info('Para conectar a extensão Chrome:');
+      logger.info(`  WebSocket: ws://localhost:${WS_PORT}`);
+    }
     logger.info('');
   });
 }

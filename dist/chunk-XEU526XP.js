@@ -1228,7 +1228,28 @@ var LOCAL_TOOLS = [
 ];
 async function handleTool(name, args, wsServer, pwManager, driver) {
   logger.info(`Executing tool: ${name}`, args);
-  const resolvedDriver = driver ?? ((process.env.SEI_MCP_DRIVER || "").toLowerCase() === "playwright" ? "playwright" : "extension");
+  const requestedDriver = args.driver;
+  delete args.driver;
+  const configuredDriver = driver ?? (process.env.SEI_MCP_DRIVER || "both").toLowerCase();
+  let resolvedDriver;
+  if (requestedDriver && (requestedDriver === "extension" || requestedDriver === "playwright")) {
+    resolvedDriver = requestedDriver;
+  } else if (configuredDriver === "playwright") {
+    resolvedDriver = "playwright";
+  } else if (configuredDriver === "extension") {
+    resolvedDriver = "extension";
+  } else {
+    const pwAvailable = pwManager && pwManager.getConnectedCount() > 0;
+    const extAvailable = wsServer.isConnected();
+    if (pwAvailable) {
+      resolvedDriver = "playwright";
+    } else if (extAvailable) {
+      resolvedDriver = "extension";
+    } else {
+      resolvedDriver = "playwright";
+    }
+    logger.debug(`Auto-selected driver: ${resolvedDriver} (pw: ${pwAvailable}, ext: ${extAvailable})`);
+  }
   if (LOCAL_TOOLS.includes(name)) {
     return handleLocalTool(name, args);
   }
@@ -3016,7 +3037,8 @@ function renderPricingPage(params) {
 // src/http-server.ts
 var HTTP_PORT = parseInt(process.env.PORT || process.env.SEI_MCP_HTTP_PORT || "3100", 10);
 var WS_PORT = parseInt(process.env.SEI_MCP_WS_PORT || "19999", 10);
-var DRIVER = (process.env.SEI_MCP_DRIVER || "extension").toLowerCase() === "playwright" ? "playwright" : "extension";
+var DRIVER_ENV = (process.env.SEI_MCP_DRIVER || "both").toLowerCase();
+var DRIVER = DRIVER_ENV === "playwright" ? "playwright" : DRIVER_ENV === "extension" ? "extension" : "both";
 var ALLOWED_ORIGINS = [
   "chrome-extension://",
   // Qualquer extensão Chrome
@@ -3088,12 +3110,14 @@ async function fetchGoogleUserInfo(accessToken) {
 }
 async function runHttpServer() {
   const wsServer = new SeiWebSocketServer(WS_PORT);
-  if (DRIVER === "extension") {
+  if (DRIVER === "both" || DRIVER === "extension") {
     await wsServer.start();
-  } else {
-    logger.info("Driver Playwright ativo; WebSocket da extens\xE3o n\xE3o \xE9 necess\xE1rio (n\xE3o ser\xE1 iniciado).");
+    logger.info(`WebSocket server started on port ${WS_PORT} for Chrome extension connections`);
   }
   const pwManager = new SeiPlaywrightManager();
+  if (DRIVER === "both" || DRIVER === "playwright") {
+    logger.info("Playwright driver enabled for direct browser automation");
+  }
   const transports = /* @__PURE__ */ new Map();
   const sessionAuth = /* @__PURE__ */ new Map();
   const httpServer = createHttpServer(async (req, res) => {
@@ -3202,6 +3226,8 @@ async function runHttpServer() {
       return;
     }
     if (url.pathname === "/health" || url.pathname === "/") {
+      const extensionConnections = DRIVER === "both" || DRIVER === "extension" ? wsServer.getConnectedCount() : 0;
+      const playwrightSessions = DRIVER === "both" || DRIVER === "playwright" ? pwManager.getConnectedCount() : 0;
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
         status: "ok",
@@ -3209,9 +3235,19 @@ async function runHttpServer() {
         version: "1.0.0",
         mode: "http",
         driver: DRIVER,
-        wsPort: WS_PORT,
+        drivers: {
+          extension: {
+            enabled: DRIVER === "both" || DRIVER === "extension",
+            wsPort: WS_PORT,
+            connections: extensionConnections
+          },
+          playwright: {
+            enabled: DRIVER === "both" || DRIVER === "playwright",
+            sessions: playwrightSessions
+          }
+        },
         tools: toolCount,
-        connections: DRIVER === "extension" ? wsServer.getConnectedCount() : pwManager.getConnectedCount()
+        totalConnections: extensionConnections + playwrightSessions
       }));
       return;
     }
@@ -3329,14 +3365,21 @@ async function runHttpServer() {
     logger.info("=".repeat(50));
     logger.info(`MCP endpoint: http://localhost:${HTTP_PORT}/mcp`);
     logger.info(`Health check: http://localhost:${HTTP_PORT}/health`);
-    logger.info(`Driver: ${DRIVER}`);
-    if (DRIVER === "extension") logger.info(`WebSocket for Chrome extension: ws://localhost:${WS_PORT}`);
+    logger.info(`Driver mode: ${DRIVER}`);
+    if (DRIVER === "both" || DRIVER === "extension") {
+      logger.info(`  - Extension: WebSocket on ws://localhost:${WS_PORT}`);
+    }
+    if (DRIVER === "both" || DRIVER === "playwright") {
+      logger.info(`  - Playwright: Direct browser automation enabled`);
+    }
     logger.info(`Pricing: http://localhost:${HTTP_PORT}/pricing`);
     logger.info(`Available tools: ${toolCount}`);
     logger.info("=".repeat(50));
-    logger.info("");
-    logger.info("Para conectar a extens\xE3o mcp-chrome:");
-    logger.info(`  URL: http://localhost:${HTTP_PORT}/mcp`);
+    if (DRIVER === "both" || DRIVER === "extension") {
+      logger.info("");
+      logger.info("Para conectar a extens\xE3o Chrome:");
+      logger.info(`  WebSocket: ws://localhost:${WS_PORT}`);
+    }
     logger.info("");
   });
 }

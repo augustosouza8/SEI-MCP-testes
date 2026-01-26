@@ -178,12 +178,41 @@ export async function handleTool(
   args: Record<string, unknown>,
   wsServer: SeiWebSocketServer,
   pwManager?: SeiPlaywrightManager,
-  driver?: 'extension' | 'playwright'
+  driver?: 'extension' | 'playwright' | 'both'
 ): Promise<ToolResult> {
   logger.info(`Executing tool: ${name}`, args);
 
-  const resolvedDriver: 'extension' | 'playwright' =
-    driver ?? ((process.env.SEI_MCP_DRIVER || '').toLowerCase() === 'playwright' ? 'playwright' : 'extension');
+  // Allow per-call driver override via args
+  const requestedDriver = args.driver as 'extension' | 'playwright' | undefined;
+  delete args.driver; // Don't forward to actual tool
+
+  const configuredDriver = driver ?? (process.env.SEI_MCP_DRIVER || 'both').toLowerCase();
+
+  // Resolve which driver to use
+  // Priority: 1) per-call driver arg, 2) configured driver, 3) smart fallback
+  let resolvedDriver: 'extension' | 'playwright';
+
+  if (requestedDriver && (requestedDriver === 'extension' || requestedDriver === 'playwright')) {
+    resolvedDriver = requestedDriver;
+  } else if (configuredDriver === 'playwright') {
+    resolvedDriver = 'playwright';
+  } else if (configuredDriver === 'extension') {
+    resolvedDriver = 'extension';
+  } else {
+    // 'both' mode: prefer playwright if available, fallback to extension
+    const pwAvailable = pwManager && pwManager.getConnectedCount() > 0;
+    const extAvailable = wsServer.isConnected();
+
+    if (pwAvailable) {
+      resolvedDriver = 'playwright';
+    } else if (extAvailable) {
+      resolvedDriver = 'extension';
+    } else {
+      // Neither connected - try playwright first (can auto-launch)
+      resolvedDriver = 'playwright';
+    }
+    logger.debug(`Auto-selected driver: ${resolvedDriver} (pw: ${pwAvailable}, ext: ${extAvailable})`);
+  }
 
   // Handle local tools first (no extension needed)
   if (LOCAL_TOOLS.includes(name)) {
