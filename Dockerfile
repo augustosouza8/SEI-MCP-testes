@@ -9,15 +9,13 @@ RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 # Install deps (including vendored sei-playwright)
 COPY package.json pnpm-lock.yaml ./
 COPY vendor ./vendor
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --prod
 
-# Build
-COPY tsconfig.json ./
-COPY src ./src
-RUN pnpm build
+# Copy pre-built dist (built locally to avoid devDependencies in container)
+COPY dist ./dist
 
 # Render provides PORT; server reads process.env.PORT
 EXPOSE 10000
 
-CMD ["pnpm", "start:http"]
+CMD ["node", "dist/http-server.js"]
 

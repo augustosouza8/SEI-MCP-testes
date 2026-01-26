@@ -2,13 +2,10 @@
 node_modules/
 
 # Build
-dist/
 build-mcpb/
 *.mcpb
 
-# Vendored packages may include their own dist/
-!vendor/sei-playwright/dist/
-!vendor/sei-playwright/dist/**
+# Keep dist/ for Render deployment (pre-built)
 
 # Environment
 .env
