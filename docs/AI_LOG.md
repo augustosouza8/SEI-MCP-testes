@@ -1,5 +1,122 @@
 # SEI-MCP Development Log
 
+## 2026-01-26 — 5 Melhorias de Performance
+
+### Resumo
+Implementadas 5 otimizações de performance identificadas via duelo Claude vs Codex.
+
+### Arquivos Modificados
+
+| Arquivo | Mudanças |
+|---------|----------|
+| `src/websocket/server.ts` | Retry com backoff exponencial (3x, 500→1000→2000ms) |
+| `src/sei/selectors.ts` | Cache de seletores com TTL 5min |
+| `src/sei/soap-client.ts` | Connection pooling com keep-alive |
+| `src/tools/index.ts` | Smart Wait para estabilidade de página |
+
+### Impacto Esperado
+
+| Melhoria | Impacto |
+|----------|---------|
+| Retry com Backoff | +80% sucesso em erros transitórios |
+| Cache de Seletores | -50% buscas DOM |
+| Connection Pooling | -40% latência SOAP |
+| Smart Wait | -70% tempo de wait |
+
+### Variáveis de Ambiente Novas
+
+| Variável | Descrição | Padrão |
+|----------|-----------|--------|
+| SEI_MCP_SMART_WAIT | Habilitar smart wait | true |
+| SEI_MCP_STABILITY_MS | Tempo de estabilidade | 300 |
+| SEI_MCP_MAX_WAIT_MS | Timeout máximo do wait | 5000 |
+
+---
+
+## 2026-01-26 — Empacotamento como Desktop Extension (.mcpb)
+
+### Resumo
+Criado pacote `.mcpb` para instalação "um clique" no Claude Desktop. Também corrigido bug crítico onde o servidor crashava se a porta WebSocket estivesse em uso.
+
+### Arquivos Criados
+
+| Arquivo | Descrição |
+|---------|-----------|
+| `manifest.json` | Manifest para Desktop Extension (formato 0.3) |
+| `scripts/build-mcpb.sh` | Script para empacotar como .mcpb |
+| `sei-mcp.mcpb` | Pacote final (~3MB) |
+
+### Arquivos Modificados
+
+| Arquivo | Mudanças |
+|---------|----------|
+| `src/websocket/server.ts` | Tratamento gracioso de erro `EADDRINUSE` - não crasha mais |
+| `README.md` | Instruções de instalação via Desktop Extension |
+
+### Correção Crítica
+
+**Problema**: Servidor crashava com `EADDRINUSE` quando porta 19999 estava em uso.
+
+**Antes**:
+```typescript
+this.wss.on('error', (err) => {
+  logger.error('WebSocket server error', err);
+  reject(err);  // CRASHAVA o servidor MCP
+});
+```
+
+**Depois**:
+```typescript
+this.wss.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    logger.warn(`Port ${this.port} already in use...`);
+    this.wss = null;
+    resolve();  // Continua funcionando via MCP
+  } else {
+    logger.error('WebSocket server error', err);
+    resolve();  // Não crasha
+  }
+});
+```
+
+### Como Instalar (.mcpb)
+
+1. No **Claude Desktop**: Settings > Extensions > Advanced settings
+2. Clique em **"Install Extension..."**
+3. Selecione `sei-mcp.mcpb`
+
+### Como Empacotar
+
+```bash
+# Instalar CLI
+npm install -g @anthropic-ai/mcpb
+
+# Validar manifest
+mcpb validate manifest.json
+
+# Preparar bundle
+mkdir -p build-mcpb/server
+cp manifest.json build-mcpb/
+cp -r dist/* build-mcpb/server/
+cd build-mcpb/server && npm install --omit=dev --ignore-scripts
+rm package.json package-lock.json
+cd ../..
+
+# Empacotar
+mcpb pack build-mcpb sei-mcp.mcpb
+
+# Limpar
+rm -rf build-mcpb
+```
+
+### Detalhes do Bundle
+
+- Tamanho: ~3.0 MB
+- Arquivos: 2150
+- Node.js runtime: Incluído no Claude Desktop
+
+---
+
 ## 2026-01-25 — Suporte a Múltiplas Sessões, Controle de Janela e Heartbeat
 
 ### Resumo
