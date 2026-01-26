@@ -36,5 +36,7 @@ services:
       - key: SEI_MCP_PW_HEADLESS
         value: "1"
       - key: SEI_MCP_PW_PERSISTENT
-        value: "0"
+        value: "1"
+      - key: SEI_MCP_PW_USER_DATA_DIR
+        value: "/app/.sei-mcp-profile"
 
