@@ -6,6 +6,10 @@ dist/
 build-mcpb/
 *.mcpb
 
+# Vendored packages may include their own dist/
+!vendor/sei-playwright/dist/
+!vendor/sei-playwright/dist/**
+
 # Environment
 .env
 .env.local
