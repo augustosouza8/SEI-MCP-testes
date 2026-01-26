@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: sei-mcp
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: SEI_MCP_DRIVER
+        value: playwright
+      - key: SEI_MCP_REQUIRE_AUTH
+        value: "false"
+      - key: SEI_MCP_PUBLIC_BASE_URL
+        sync: false
+      # Admin token (opcional). Se definido, pode ser usado como Bearer token para bypass do licenciamento.
+      - key: SEI_MCP_BEARER_TOKEN
+        sync: false
+      # Licensing / metering
+      - key: SEI_MCP_LICENSING_API_URL
+        value: https://sei-tribunais-licensing-api.onrender.com/api/v1
+      # OAuth / Pricing (opcional)
+      - key: SEI_MCP_JWT_SECRET
+        sync: false
+      - key: SEI_MCP_GOOGLE_CLIENT_ID
+        sync: false
+      - key: SEI_MCP_GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: SEI_MCP_STRIPE_SECRET_KEY
+        sync: false
+      - key: SEI_MCP_STRIPE_PRICE_STARTER_MONTHLY
+        sync: false
+      - key: SEI_MCP_STRIPE_PRICE_PRO_MONTHLY
+        sync: false
+      # Playwright
+      - key: SEI_MCP_PW_HEADLESS
+        value: "1"
+      - key: SEI_MCP_PW_PERSISTENT
+        value: "0"
+
