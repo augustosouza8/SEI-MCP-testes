@@ -10,7 +10,7 @@ services:
       - key: SEI_MCP_DRIVER
         value: playwright
       - key: SEI_MCP_REQUIRE_AUTH
-        value: "false"
+        value: "true"
       - key: SEI_MCP_PUBLIC_BASE_URL
         sync: false
       # Admin token (opcional). Se definido, pode ser usado como Bearer token para bypass do licenciamento.
