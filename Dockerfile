@@ -17,5 +17,5 @@ COPY dist ./dist
 # Render provides PORT; server reads process.env.PORT
 EXPOSE 10000
 
-CMD ["node", "dist/http-server.js"]
+CMD ["node", "dist/index.js", "http"]
 
