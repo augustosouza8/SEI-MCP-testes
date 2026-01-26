@@ -1,5 +1,236 @@
 # SEI-MCP Development Log
 
+## 2026-01-26 — Mapeamento Completo de Ícones do SEI via Playwright
+
+### Resumo
+Exploração detalhada da interface do SEI usando Playwright para mapear todos os ícones e ações disponíveis. Este mapeamento é essencial para melhorar a navegação automatizada do sei-mcp.
+
+### Estrutura de iframes do SEI
+
+O SEI utiliza uma estrutura de iframes aninhados:
+- **Página principal**: Header, menu lateral, busca rápida
+- **`iframe[name="ifrArvore"]`**: Árvore de documentos (lado esquerdo)
+- **`iframe[name="ifrVisualizacao"]`**: Área de ações/visualização (lado direito)
+
+### Ícones do PROCESSO (Barra de Ações - iframe ifrVisualizacao)
+
+| Ícone | Ação URL | Parâmetros |
+|-------|----------|------------|
+| Incluir Documento | `documento_escolher_tipo` | `id_procedimento` |
+| Iniciar Processo Relacionado | `procedimento_escolher_tipo_relacionado` | `id_procedimento_destino` |
+| Consultar/Alterar Processo | `procedimento_alterar` | `id_procedimento` |
+| Acompanhamento Especial | `acompanhamento_gerenciar` | `id_procedimento` |
+| Ciência | JavaScript popup | - |
+| Enviar Processo | `procedimento_enviar` | `id_procedimento` |
+| Atualizar Andamento | `procedimento_atualizar_andamento` | `id_procedimento` |
+| Atribuir Processo | `procedimento_atribuicao_cadastrar` | `id_procedimento` |
+| Adicionar aos Favoritos | `protocolo_modelo_gerenciar` | `id_protocolo` |
+| Duplicar Processo | `procedimento_duplicar` | `id_procedimento` |
+| Enviar Correspondência Eletrônica | JavaScript popup | - |
+| Relacionamentos do Processo | `procedimento_relacionar` | `id_procedimento` |
+| Incluir em Bloco | JavaScript popup | - |
+| Gerenciar Acesso Externo | `acesso_externo_gerenciar` | `id_procedimento` |
+| Anotações | `anotacao_registrar` | `id_procedimento` |
+| Sobrestar Processo | `procedimento_sobrestar` | `id_procedimento` |
+| Anexar Processo | `procedimento_anexar` | `id_procedimento` |
+| Concluir Processo | JavaScript popup | - |
+| Gerar PDF do Processo | `procedimento_gerar_pdf` | `id_procedimento` |
+| Gerar ZIP do Processo | `procedimento_gerar_zip` | `id_procedimento` |
+| Comentários | `comentario_listar` | `id_procedimento` |
+| Gerenciar Marcador | `andamento_marcador_gerenciar` | `id_procedimento` |
+| Controle de Prazo | `controle_prazo_definir` | `id_procedimento` |
+| Pesquisar no Processo | `procedimento_pesquisar` | `id_procedimento` |
+| Ferramentas de IA | JavaScript popup | - |
+
+### Ícones do DOCUMENTO (Barra de Ações quando documento selecionado)
+
+| Ícone | Ação URL | Parâmetros |
+|-------|----------|------------|
+| Incluir Documento | `documento_escolher_tipo` | `id_procedimento` |
+| Consultar/Alterar Documento | `documento_alterar` | `id_procedimento`, `id_documento` |
+| **Assinar Documento** | JavaScript popup | - |
+| Gerenciar Assinatura Externa | `assinatura_externa_gerenciar` | `id_procedimento`, `id_documento` |
+| Incluir em Bloco de Assinatura | `bloco_escolher` | `id_procedimento`, `id_documento` |
+| Versões do Documento | `documento_versao_listar` | `id_procedimento`, `id_documento` |
+| Imprimir Web | `documento_imprimir_web` | `id_documento` |
+| Gerar PDF do Documento | `procedimento_gerar_pdf` | `id_procedimento`, `id_documento` |
+| Abrir em nova aba | `documento_visualizar` | `id_documento` |
+
+### Ícones na Árvore de Documentos (iframe ifrArvore)
+
+**Na linha do número do processo:**
+- Menu cópia protocolo (popup com opções de cópia)
+- Adicionar aos Favoritos
+- Filtrar Linha Direta
+- Ícone de Acesso Restrito (indica nível: Restrito, Sigiloso)
+- Ícone de Acompanhamento Especial
+- Marcador (ex: "Marcador Nicholas")
+
+**Por documento:**
+- Ícone de pasta (expandir/colapsar)
+- Menu cópia protocolo (ícone "≡" antes do nome)
+- Link do documento (nome + número SEI entre parênteses)
+- Ícone de checkbox (seleção para ações em lote)
+- Unidade de origem (link com tooltip do nome completo)
+- Ícone de Acesso Restrito (tipo de restrição no tooltip)
+- Ícone de Assinatura (nome do assinante no tooltip via `javascript:alert()`)
+
+### Menu de Contexto do Documento
+
+Ao clicar no menu "≡" do documento:
+- Copiar número SEI
+- Copiar nome do documento
+- Copiar link do documento
+- Duplicar documento
+- Copiar para...
+
+**Tooltip adicional:**
+- Copiar texto (número SEI ou nome completo)
+- Copiar link editor (número SEI ou nome completo)
+- Link para Acesso Direto
+
+### Menu de Contexto do Processo
+
+Ao clicar no menu "≡" do número do processo:
+- Copiar número do processo
+- Copiar link do processo
+- Enviar Documento Externo
+- Ações em lote
+- Atribuir Processo
+- Personalizar Menu
+
+### Formulário Enviar Processo
+
+Elementos mapeados:
+- `listbox "Processos:"` - Processos selecionados
+- `combobox "Órgão das Unidades:"` - Filtro por órgão (CODEMGE, SEF, etc.)
+- `textbox` (id=`#txtUnidade`) - Busca de unidades com autocomplete
+- `listbox "Unidades:"` - Unidades selecionadas
+- `checkbox "Manter processo aberto na unidade atual"`
+- `checkbox "Remover anotação"`
+- `checkbox "Enviar e-mail de notificação"`
+- `radio "Data certa"` / `radio "Prazo em dias"` - Retorno Programado
+- `button "Enviar"`
+
+### Implicações para o sei-mcp
+
+1. **Navegação em iframes**: Todas as ações requerem navegar para o iframe correto antes de interagir
+2. **Ações JavaScript**: Muitas ações usam popups JS (`javascript:void(0)`) ao invés de URLs diretas
+3. **IDs dinâmicos**: Os parâmetros `id_procedimento` e `id_documento` são extraídos da URL
+4. **Autocomplete**: Campos como "Unidades" usam autocomplete assíncrono
+5. **Documentos em rascunho**: Documentos não assinados têm URL `about:blank` e retornam "Acesso não permitido"
+
+---
+
+## 2026-01-26 — Ferramentas Genéricas de Playwright Adicionadas
+
+### Resumo
+Adicionadas 21 ferramentas genéricas de Playwright/Browser ao sei-mcp, totalizando 84 ferramentas.
+
+### Ferramentas Adicionadas
+
+| Ferramenta | Descrição |
+|------------|-----------|
+| `browser_navigate` | Navega para uma URL |
+| `browser_navigate_back` | Volta para página anterior |
+| `browser_close` | Fecha o navegador |
+| `browser_click` | Clica em elemento |
+| `browser_type` | Digita texto |
+| `browser_fill_form` | Preenche múltiplos campos |
+| `browser_select_option` | Seleciona opção em dropdown |
+| `browser_hover` | Hover sobre elemento |
+| `browser_drag` | Drag and drop |
+| `browser_press_key` | Pressiona tecla |
+| `browser_snapshot` | Snapshot de acessibilidade |
+| `browser_take_screenshot` | Captura screenshot |
+| `browser_resize` | Redimensiona janela |
+| `browser_tabs` | Gerencia abas |
+| `browser_handle_dialog` | Lida com diálogos |
+| `browser_file_upload` | Upload de arquivos |
+| `browser_evaluate` | Executa JavaScript |
+| `browser_run_code` | Executa código Playwright |
+| `browser_console_messages` | Mensagens do console |
+| `browser_network_requests` | Requisições de rede |
+| `browser_wait_for` | Aguarda texto/elemento/tempo |
+
+### Arquivos Modificados
+
+| Arquivo | Mudanças |
+|---------|----------|
+| `src/tools/all-tools.ts` | +21 schemas e definições de ferramentas |
+| `src/playwright/manager.ts` | +21 implementações de ferramentas |
+
+### Total de Ferramentas: 84
+- 63 ferramentas SEI-específicas
+- 21 ferramentas genéricas de browser
+
+### Servidor Remoto
+Testado e funcionando corretamente:
+- URL: `https://sei-tribunais-licensing-api.onrender.com/mcp`
+- Protocol: `2025-06-18` ✓
+- Tools: 12 ferramentas SEI
+
+**Nota**: O Claude Desktop não suporta nativamente servidores MCP HTTP remotos. Para usar o servidor remoto, seria necessário um proxy local.
+
+---
+
+## 2026-01-26 — Bundle .mcpb Atualizado + Debug MCP Remoto
+
+### Resumo
+Atualizado bundle `.mcpb` com suporte a Playwright e diagnosticado problema de conexão do MCP remoto no Claude Desktop.
+
+### Problema Identificado
+O Claude Desktop não conseguia manter conexão com o MCP remoto (`https://sei-tribunais-licensing-api.onrender.com/mcp`):
+- Erro: "Server transport closed unexpectedly"
+- Causa: Incompatibilidade de protocolo (cliente usa `2025-06-18`, servidor retornava `2024-11-05`)
+
+### Correção Aplicada
+```python
+# app/api/endpoints/mcp_server.py
+async def handle_initialize(params: dict) -> dict:
+    client_version = params.get("protocolVersion", "2024-11-05")
+    supported_versions = ["2024-11-05", "2025-06-18"]
+    protocol_version = client_version if client_version in supported_versions else "2024-11-05"
+    return {"protocolVersion": protocol_version, ...}
+```
+
+### Bundle .mcpb Atualizado
+
+| Arquivo | Tamanho | Descrição |
+|---------|---------|-----------|
+| `sei-mcp.mcpb` | 30KB | Bundle com Playwright driver |
+| `manifest.json` | 1.7KB | Manifest v0.3 com env vars |
+
+**Localização**: `~/Desktop/sei-mcp.mcpb`
+
+**Configuração incluída**:
+```json
+{
+  "env": {
+    "SEI_MCP_DRIVER": "playwright",
+    "SEI_MCP_REQUIRE_AUTH": "false",
+    "SEI_MCP_PW_HEADLESS": "0",
+    "SEI_MCP_PW_PERSISTENT": "1",
+    "SEI_MCP_PW_USER_DATA_DIR": "${HOME}/.sei-mcp-profile"
+  }
+}
+```
+
+### Como Instalar o .mcpb
+
+1. Abrir **Claude Desktop**
+2. Settings > Extensions > Advanced settings
+3. Clicar em **"Install Extension..."**
+4. Selecionar `~/Desktop/sei-mcp.mcpb`
+
+### Status
+
+- [x] Bundle .mcpb criado com Playwright
+- [x] Correção de protocolo enviada para Render
+- [ ] Aguardando deploy no Render (Docker rebuild)
+
+---
+
 ## 2026-01-26 — 5 Melhorias de Performance
 
 ### Resumo

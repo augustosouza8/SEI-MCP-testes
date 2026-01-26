@@ -259,6 +259,18 @@ export class SeiPlaywrightManager {
     args: Record<string, unknown>,
     sessionId?: string
   ): Promise<unknown> {
+    // sei_login is special: it creates the session, so don't require one
+    if (name === 'sei_login') {
+      return this.login({
+        url: args.url as string,
+        username: args.username as string,
+        password: args.password as string,
+        orgao: args.orgao as string | undefined,
+        session_id: sessionId,
+        timeout_ms: args.timeout_ms as number | undefined,
+      });
+    }
+
     const s = this.getSession(sessionId);
     if (!s) {
       throw new Error('Nenhuma sessão Playwright ativa. Chame sei_login primeiro (com url/usuário/senha).');
@@ -814,6 +826,350 @@ export class SeiPlaywrightManager {
               session_id: session.id,
               cdpEndpoint: session.client.getCdpEndpoint(),
             };
+          }
+
+          // =====================================================
+          // === FERRAMENTAS GENÉRICAS DE PLAYWRIGHT/BROWSER ===
+          // =====================================================
+
+          case 'browser_close': {
+            void this.closeSession(session.id);
+            return { success: true, message: 'Navegador fechado' };
+          }
+
+          case 'browser_navigate': {
+            if (!page) throw new Error('Browser não disponível');
+            const url = args.url as string;
+            await page.goto(url, { waitUntil: 'domcontentloaded' });
+            return { success: true, url: page.url(), title: await page.title() };
+          }
+
+          case 'browser_navigate_back': {
+            if (!page) throw new Error('Browser não disponível');
+            await page.goBack();
+            return { success: true, url: page.url() };
+          }
+
+          case 'browser_click': {
+            if (!page) throw new Error('Browser não disponível');
+            const selector = (args.selector || args.ref) as string;
+            if (!selector) throw new Error('selector ou ref é obrigatório');
+            const sel = toPlaywrightSelector(selector);
+            const button = (args.button as 'left' | 'right' | 'middle' | undefined) ?? 'left';
+            const doubleClick = (args.doubleClick as boolean | undefined) ?? false;
+            const modifiers = args.modifiers as Array<'Alt' | 'Control' | 'Meta' | 'Shift'> | undefined;
+
+            const loc = page.locator(sel).first();
+            if (doubleClick) {
+              await loc.dblclick({ button, modifiers });
+            } else {
+              await loc.click({ button, modifiers });
+            }
+            return { success: true };
+          }
+
+          case 'browser_type': {
+            if (!page) throw new Error('Browser não disponível');
+            const selector = (args.selector || args.ref) as string;
+            if (!selector) throw new Error('selector ou ref é obrigatório');
+            const sel = toPlaywrightSelector(selector);
+            const text = args.text as string;
+            const slowly = (args.slowly as boolean | undefined) ?? false;
+            const submit = (args.submit as boolean | undefined) ?? false;
+
+            const loc = page.locator(sel).first();
+            if (slowly) {
+              await loc.pressSequentially(text);
+            } else {
+              await loc.fill(text);
+            }
+            if (submit) {
+              await loc.press('Enter');
+            }
+            return { success: true };
+          }
+
+          case 'browser_fill_form': {
+            if (!page) throw new Error('Browser não disponível');
+            const fields = args.fields as Array<{
+              name: string;
+              type: string;
+              ref?: string;
+              selector?: string;
+              value: string;
+            }>;
+
+            const results: Array<{ name: string; success: boolean; error?: string }> = [];
+            for (const field of fields) {
+              try {
+                const selector = field.selector || field.ref;
+                if (!selector) {
+                  results.push({ name: field.name, success: false, error: 'selector ou ref necessário' });
+                  continue;
+                }
+                const sel = toPlaywrightSelector(selector);
+                const loc = page.locator(sel).first();
+
+                switch (field.type) {
+                  case 'textbox':
+                    await loc.fill(field.value);
+                    break;
+                  case 'checkbox':
+                    if (field.value === 'true') await loc.check();
+                    else await loc.uncheck();
+                    break;
+                  case 'radio':
+                    await loc.check();
+                    break;
+                  case 'combobox':
+                    await loc.selectOption({ label: field.value }).catch(() => loc.selectOption(field.value));
+                    break;
+                  case 'slider':
+                    await loc.fill(field.value);
+                    break;
+                }
+                results.push({ name: field.name, success: true });
+              } catch (err) {
+                results.push({ name: field.name, success: false, error: err instanceof Error ? err.message : String(err) });
+              }
+            }
+            return { results };
+          }
+
+          case 'browser_select_option': {
+            if (!page) throw new Error('Browser não disponível');
+            const selector = (args.selector || args.ref) as string;
+            if (!selector) throw new Error('selector ou ref é obrigatório');
+            const values = args.values as string[];
+            const sel = toPlaywrightSelector(selector);
+            await page.locator(sel).first().selectOption(values);
+            return { success: true };
+          }
+
+          case 'browser_hover': {
+            if (!page) throw new Error('Browser não disponível');
+            const selector = (args.selector || args.ref) as string;
+            if (!selector) throw new Error('selector ou ref é obrigatório');
+            const sel = toPlaywrightSelector(selector);
+            await page.locator(sel).first().hover();
+            return { success: true };
+          }
+
+          case 'browser_drag': {
+            if (!page) throw new Error('Browser não disponível');
+            const startSelector = (args.startSelector || args.startRef) as string;
+            const endSelector = (args.endSelector || args.endRef) as string;
+            if (!startSelector || !endSelector) throw new Error('startSelector e endSelector são obrigatórios');
+
+            const startSel = toPlaywrightSelector(startSelector);
+            const endSel = toPlaywrightSelector(endSelector);
+            await page.locator(startSel).first().dragTo(page.locator(endSel).first());
+            return { success: true };
+          }
+
+          case 'browser_press_key': {
+            if (!page) throw new Error('Browser não disponível');
+            const key = args.key as string;
+            await page.keyboard.press(key);
+            return { success: true };
+          }
+
+          case 'browser_snapshot': {
+            if (!browserClient) throw new Error('Browser não disponível');
+            const snap = await browserClient.snapshot(false);
+            const filename = args.filename as string | undefined;
+            if (filename) {
+              const { writeFile } = await import('fs/promises');
+              await writeFile(filename, snap);
+              return { saved: filename };
+            }
+            try {
+              return JSON.parse(snap);
+            } catch {
+              return { snapshot: snap };
+            }
+          }
+
+          case 'browser_take_screenshot': {
+            if (!page) throw new Error('Browser não disponível');
+            const type = (args.type as 'png' | 'jpeg' | undefined) ?? 'png';
+            const fullPage = (args.fullPage as boolean | undefined) ?? false;
+            const filename = args.filename as string | undefined;
+            const selector = (args.selector || args.ref) as string | undefined;
+
+            let buffer: Buffer;
+            if (selector) {
+              const sel = toPlaywrightSelector(selector);
+              buffer = await page.locator(sel).first().screenshot({ type });
+            } else {
+              buffer = await page.screenshot({ type, fullPage });
+            }
+
+            if (filename) {
+              const { writeFile } = await import('fs/promises');
+              await writeFile(filename, buffer);
+              return { saved: filename, bytes: buffer.byteLength };
+            }
+            return { image: buffer.toString('base64'), mimeType: `image/${type}` };
+          }
+
+          case 'browser_resize': {
+            if (!page) throw new Error('Browser não disponível');
+            const width = args.width as number;
+            const height = args.height as number;
+            await page.setViewportSize({ width, height });
+            return { success: true, width, height };
+          }
+
+          case 'browser_handle_dialog': {
+            if (!page) throw new Error('Browser não disponível');
+            const accept = args.accept as boolean;
+            const promptText = args.promptText as string | undefined;
+
+            // Configurar handler para próximo diálogo
+            page.once('dialog', async (dialog) => {
+              if (accept) {
+                await dialog.accept(promptText);
+              } else {
+                await dialog.dismiss();
+              }
+            });
+            return { success: true, message: 'Handler configurado para próximo diálogo' };
+          }
+
+          case 'browser_evaluate': {
+            if (!page) throw new Error('Browser não disponível');
+            const fn = args.function as string;
+            const selector = (args.selector || args.ref) as string | undefined;
+
+            let result: unknown;
+            if (selector) {
+              const sel = toPlaywrightSelector(selector);
+              const element = page.locator(sel).first();
+              result = await element.evaluate(new Function('return ' + fn)() as (el: Element) => unknown);
+            } else {
+              result = await page.evaluate(new Function('return ' + fn)() as () => unknown);
+            }
+            return { result };
+          }
+
+          case 'browser_file_upload': {
+            if (!page) throw new Error('Browser não disponível');
+            const paths = args.paths as string[] | undefined;
+
+            // Configurar handler para próximo file chooser
+            const fileChooserPromise = page.waitForEvent('filechooser');
+            // O usuário precisa clicar no input de arquivo após chamar esta função
+            // ou podemos apenas configurar o handler
+            if (paths && paths.length > 0) {
+              page.once('filechooser', async (fileChooser) => {
+                await fileChooser.setFiles(paths);
+              });
+              return { success: true, message: `Handler configurado para upload de ${paths.length} arquivo(s)` };
+            } else {
+              page.once('filechooser', async (fileChooser) => {
+                await fileChooser.setFiles([]);
+              });
+              return { success: true, message: 'File chooser será cancelado' };
+            }
+          }
+
+          case 'browser_tabs': {
+            if (!browserClient) throw new Error('Browser não disponível');
+            const action = args.action as 'list' | 'new' | 'close' | 'select';
+            const index = args.index as number | undefined;
+            const context = page?.context();
+
+            if (!context) throw new Error('Browser context não disponível');
+
+            switch (action) {
+              case 'list': {
+                const pages = context.pages();
+                return {
+                  tabs: pages.map((p, i) => ({
+                    index: i,
+                    url: p.url(),
+                    title: p.url(), // title seria async, simplificamos
+                  })),
+                  current: pages.indexOf(page!),
+                };
+              }
+              case 'new': {
+                const newPage = await context.newPage();
+                return { success: true, index: context.pages().indexOf(newPage) };
+              }
+              case 'close': {
+                const pages = context.pages();
+                const targetIndex = index ?? pages.indexOf(page!);
+                if (targetIndex >= 0 && targetIndex < pages.length) {
+                  await pages[targetIndex].close();
+                }
+                return { success: true };
+              }
+              case 'select': {
+                if (index === undefined) throw new Error('index é obrigatório para select');
+                const pages = context.pages();
+                if (index >= 0 && index < pages.length) {
+                  await pages[index].bringToFront();
+                }
+                return { success: true };
+              }
+            }
+            break;
+          }
+
+          case 'browser_console_messages': {
+            // Playwright não mantém histórico de console por padrão
+            // Retornamos instrução de como capturar
+            return {
+              message: 'Para capturar mensagens do console, configure um listener antes de navegar.',
+              example: "page.on('console', msg => console.log(msg.text()))",
+            };
+          }
+
+          case 'browser_network_requests': {
+            // Similar ao console, Playwright não mantém histórico
+            return {
+              message: 'Para capturar requisições de rede, configure um listener antes de navegar.',
+              example: "page.on('request', req => console.log(req.url()))",
+            };
+          }
+
+          case 'browser_wait_for': {
+            if (!page) throw new Error('Browser não disponível');
+            const text = args.text as string | undefined;
+            const textGone = args.textGone as string | undefined;
+            const time = args.time as number | undefined;
+            const selector = args.selector as string | undefined;
+
+            if (time !== undefined) {
+              await page.waitForTimeout(time * 1000);
+              return { success: true, waited: `${time}s` };
+            }
+            if (text) {
+              await page.getByText(text).first().waitFor({ state: 'visible' });
+              return { success: true, found: text };
+            }
+            if (textGone) {
+              await page.getByText(textGone).first().waitFor({ state: 'hidden' });
+              return { success: true, gone: textGone };
+            }
+            if (selector) {
+              const sel = toPlaywrightSelector(selector);
+              await page.locator(sel).first().waitFor();
+              return { success: true, found: selector };
+            }
+            return { success: true };
+          }
+
+          case 'browser_run_code': {
+            if (!page) throw new Error('Browser não disponível');
+            const code = args.code as string;
+            // Executar código Playwright customizado
+            // O código deve ser uma função async que recebe 'page'
+            const fn = new Function('page', `return (async () => { ${code} })()`) as (p: typeof page) => Promise<unknown>;
+            const result = await fn(page);
+            return { result };
           }
 
           default:

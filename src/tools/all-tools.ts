@@ -397,6 +397,125 @@ const baseSchemas = {
   sei_get_connection_status: z.object({
     session_id: z.string().optional().describe('ID da sessão (usa default se omitido)'),
   }).describe('Retorna status da conexão WebSocket'),
+
+  // =====================================================
+  // === FERRAMENTAS GENÉRICAS DE PLAYWRIGHT/BROWSER ===
+  // =====================================================
+
+  browser_close: z.object({}).describe('Fecha o navegador e encerra a sessão'),
+
+  browser_navigate: z.object({
+    url: z.string().describe('URL para navegar'),
+  }).describe('Navega para uma URL'),
+
+  browser_navigate_back: z.object({}).describe('Volta para a página anterior no histórico'),
+
+  browser_click: z.object({
+    ref: z.string().optional().describe('Referência do elemento do snapshot'),
+    element: z.string().optional().describe('Descrição do elemento'),
+    selector: z.string().optional().describe('Seletor CSS ou XPath'),
+    button: z.enum(['left', 'right', 'middle']).default('left').describe('Botão do mouse'),
+    doubleClick: z.boolean().default(false).describe('Clique duplo'),
+    modifiers: z.array(z.enum(['Alt', 'Control', 'Meta', 'Shift'])).optional().describe('Teclas modificadoras'),
+  }).describe('Clica em um elemento na página'),
+
+  browser_type: z.object({
+    ref: z.string().optional().describe('Referência do elemento'),
+    selector: z.string().optional().describe('Seletor do campo'),
+    text: z.string().describe('Texto a digitar'),
+    slowly: z.boolean().default(false).describe('Digitar caractere por caractere'),
+    submit: z.boolean().default(false).describe('Pressionar Enter após digitar'),
+  }).describe('Digita texto em um elemento editável'),
+
+  browser_fill_form: z.object({
+    fields: z.array(z.object({
+      name: z.string().describe('Nome do campo'),
+      type: z.enum(['textbox', 'checkbox', 'radio', 'combobox', 'slider']).describe('Tipo do campo'),
+      ref: z.string().optional().describe('Referência do campo'),
+      selector: z.string().optional().describe('Seletor do campo'),
+      value: z.string().describe('Valor a preencher'),
+    })).describe('Campos a preencher'),
+  }).describe('Preenche múltiplos campos de formulário'),
+
+  browser_select_option: z.object({
+    ref: z.string().optional().describe('Referência do elemento'),
+    selector: z.string().optional().describe('Seletor do select'),
+    values: z.array(z.string()).describe('Valores a selecionar'),
+  }).describe('Seleciona opção em um dropdown'),
+
+  browser_hover: z.object({
+    ref: z.string().optional().describe('Referência do elemento'),
+    selector: z.string().optional().describe('Seletor do elemento'),
+  }).describe('Move o mouse sobre um elemento'),
+
+  browser_drag: z.object({
+    startRef: z.string().optional().describe('Referência do elemento de origem'),
+    startSelector: z.string().optional().describe('Seletor do elemento de origem'),
+    endRef: z.string().optional().describe('Referência do elemento de destino'),
+    endSelector: z.string().optional().describe('Seletor do elemento de destino'),
+  }).describe('Arrasta um elemento para outro'),
+
+  browser_press_key: z.object({
+    key: z.string().describe('Nome da tecla (ex: Enter, ArrowLeft, a)'),
+  }).describe('Pressiona uma tecla no teclado'),
+
+  browser_snapshot: z.object({
+    filename: z.string().optional().describe('Salvar snapshot em arquivo'),
+  }).describe('Captura snapshot de acessibilidade da página (melhor que screenshot para ações)'),
+
+  browser_take_screenshot: z.object({
+    type: z.enum(['png', 'jpeg']).default('png').describe('Formato da imagem'),
+    fullPage: z.boolean().default(false).describe('Capturar página inteira'),
+    ref: z.string().optional().describe('Referência do elemento para capturar'),
+    selector: z.string().optional().describe('Seletor do elemento para capturar'),
+    filename: z.string().optional().describe('Nome do arquivo para salvar'),
+  }).describe('Captura screenshot da página'),
+
+  browser_resize: z.object({
+    width: z.number().describe('Largura da janela'),
+    height: z.number().describe('Altura da janela'),
+  }).describe('Redimensiona a janela do navegador'),
+
+  browser_handle_dialog: z.object({
+    accept: z.boolean().describe('Aceitar ou cancelar o diálogo'),
+    promptText: z.string().optional().describe('Texto para diálogo de prompt'),
+  }).describe('Lida com diálogos do navegador (alert, confirm, prompt)'),
+
+  browser_evaluate: z.object({
+    function: z.string().describe('Código JavaScript a executar: () => { ... } ou (element) => { ... }'),
+    ref: z.string().optional().describe('Referência do elemento para passar como argumento'),
+    selector: z.string().optional().describe('Seletor do elemento para passar como argumento'),
+  }).describe('Executa código JavaScript na página'),
+
+  browser_file_upload: z.object({
+    paths: z.array(z.string()).optional().describe('Caminhos absolutos dos arquivos. Se omitido, cancela o chooser'),
+  }).describe('Upload de um ou mais arquivos'),
+
+  browser_tabs: z.object({
+    action: z.enum(['list', 'new', 'close', 'select']).describe('Operação a realizar'),
+    index: z.number().optional().describe('Índice da aba (para close/select)'),
+  }).describe('Gerencia abas do navegador'),
+
+  browser_console_messages: z.object({
+    level: z.enum(['error', 'warning', 'info', 'debug']).default('info').describe('Nível mínimo de mensagens'),
+    filename: z.string().optional().describe('Salvar em arquivo'),
+  }).describe('Retorna mensagens do console'),
+
+  browser_network_requests: z.object({
+    includeStatic: z.boolean().default(false).describe('Incluir recursos estáticos'),
+    filename: z.string().optional().describe('Salvar em arquivo'),
+  }).describe('Lista requisições de rede desde o carregamento da página'),
+
+  browser_wait_for: z.object({
+    text: z.string().optional().describe('Texto a aguardar aparecer'),
+    textGone: z.string().optional().describe('Texto a aguardar desaparecer'),
+    time: z.number().optional().describe('Tempo em segundos'),
+    selector: z.string().optional().describe('Seletor do elemento a aguardar'),
+  }).describe('Aguarda texto, elemento ou tempo'),
+
+  browser_run_code: z.object({
+    code: z.string().describe('Código Playwright: async (page) => { ... }'),
+  }).describe('Executa código Playwright customizado'),
 };
 
 export const schemas = Object.fromEntries(
@@ -508,6 +627,47 @@ export const allTools = [
 
   // Conexão
   { name: 'sei_get_connection_status', description: 'Retorna status da conexão WebSocket', inputSchema: zodToJsonSchema(schemas.sei_get_connection_status) },
+
+  // =====================================================
+  // === FERRAMENTAS GENÉRICAS DE PLAYWRIGHT/BROWSER ===
+  // =====================================================
+
+  // Navegação
+  { name: 'browser_navigate', description: 'Navega para uma URL', inputSchema: zodToJsonSchema(schemas.browser_navigate) },
+  { name: 'browser_navigate_back', description: 'Volta para a página anterior no histórico', inputSchema: zodToJsonSchema(schemas.browser_navigate_back) },
+  { name: 'browser_close', description: 'Fecha o navegador e encerra a sessão', inputSchema: zodToJsonSchema(schemas.browser_close) },
+
+  // Interação
+  { name: 'browser_click', description: 'Clica em um elemento na página', inputSchema: zodToJsonSchema(schemas.browser_click) },
+  { name: 'browser_type', description: 'Digita texto em um elemento editável', inputSchema: zodToJsonSchema(schemas.browser_type) },
+  { name: 'browser_fill_form', description: 'Preenche múltiplos campos de formulário de uma vez', inputSchema: zodToJsonSchema(schemas.browser_fill_form) },
+  { name: 'browser_select_option', description: 'Seleciona opção em um dropdown', inputSchema: zodToJsonSchema(schemas.browser_select_option) },
+  { name: 'browser_hover', description: 'Move o mouse sobre um elemento (hover)', inputSchema: zodToJsonSchema(schemas.browser_hover) },
+  { name: 'browser_drag', description: 'Arrasta um elemento para outro (drag and drop)', inputSchema: zodToJsonSchema(schemas.browser_drag) },
+  { name: 'browser_press_key', description: 'Pressiona uma tecla no teclado', inputSchema: zodToJsonSchema(schemas.browser_press_key) },
+
+  // Captura/Visualização
+  { name: 'browser_snapshot', description: 'Captura snapshot de acessibilidade da página (melhor que screenshot para ações)', inputSchema: zodToJsonSchema(schemas.browser_snapshot) },
+  { name: 'browser_take_screenshot', description: 'Captura screenshot da página atual', inputSchema: zodToJsonSchema(schemas.browser_take_screenshot) },
+
+  // Janela/Abas
+  { name: 'browser_resize', description: 'Redimensiona a janela do navegador', inputSchema: zodToJsonSchema(schemas.browser_resize) },
+  { name: 'browser_tabs', description: 'Gerencia abas do navegador (listar, criar, fechar, selecionar)', inputSchema: zodToJsonSchema(schemas.browser_tabs) },
+
+  // Diálogos e Uploads
+  { name: 'browser_handle_dialog', description: 'Lida com diálogos do navegador (alert, confirm, prompt)', inputSchema: zodToJsonSchema(schemas.browser_handle_dialog) },
+  { name: 'browser_file_upload', description: 'Upload de um ou mais arquivos', inputSchema: zodToJsonSchema(schemas.browser_file_upload) },
+
+  // JavaScript e Código
+  { name: 'browser_evaluate', description: 'Executa código JavaScript na página', inputSchema: zodToJsonSchema(schemas.browser_evaluate) },
+  { name: 'browser_run_code', description: 'Executa código Playwright customizado', inputSchema: zodToJsonSchema(schemas.browser_run_code) },
+
+  // Debug/Monitoramento
+  { name: 'browser_console_messages', description: 'Retorna mensagens do console do navegador', inputSchema: zodToJsonSchema(schemas.browser_console_messages) },
+  { name: 'browser_network_requests', description: 'Lista requisições de rede desde o carregamento', inputSchema: zodToJsonSchema(schemas.browser_network_requests) },
+
+  // Espera
+  { name: 'browser_wait_for', description: 'Aguarda texto aparecer/desaparecer, elemento ou tempo', inputSchema: zodToJsonSchema(schemas.browser_wait_for) },
 ];
 
 export const toolCount = allTools.length;
