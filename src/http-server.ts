@@ -18,11 +18,23 @@ import { allTools, toolCount } from './tools/all-tools.js';
 import { handleTool } from './tools/index.js';
 import { logger } from './utils/logger.js';
 import { SeiPlaywrightManager } from './playwright/manager.js';
-import { clearCookie, createJwt, getAuthUser, newOauthState, parseCookies, requireAuth, setCookie } from './http/auth.js';
+import {
+  clearCookie,
+  createJwt,
+  getAuthUser,
+  newOauthState,
+  parseBearerToken,
+  parseCookies,
+  requireAuth,
+  requireMcpAuth,
+  type McpAuthContext,
+  recordUsageWithLicensing,
+  setCookie,
+} from './http/auth.js';
 import { createCheckoutSession, createPortalSession, readJsonBody } from './http/stripe.js';
 import { renderPricingPage } from './http/pages.js';
 
-const HTTP_PORT = parseInt(process.env.SEI_MCP_HTTP_PORT || '3100', 10);
+const HTTP_PORT = parseInt(process.env.PORT || process.env.SEI_MCP_HTTP_PORT || '3100', 10);
 const WS_PORT = parseInt(process.env.SEI_MCP_WS_PORT || '19999', 10);
 const DRIVER = ((process.env.SEI_MCP_DRIVER || 'extension').toLowerCase() === 'playwright')
   ? 'playwright'
@@ -119,6 +131,7 @@ export async function runHttpServer(): Promise<void> {
 
   // Map de transports por sessão
   const transports = new Map<string, StreamableHTTPServerTransport>();
+  const sessionAuth = new Map<string, McpAuthContext>();
 
   // Criar servidor HTTP
   const httpServer = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -263,18 +276,29 @@ export async function runHttpServer(): Promise<void> {
 
     // MCP endpoint
     if (url.pathname === '/mcp') {
-      // Auth gate (unless disabled)
-      const authed = requireAuth(req, res);
-      if (!authed) return;
-
       // Get or create session
       let sessionId = req.headers['mcp-session-id'] as string | undefined;
       let transport = sessionId ? transports.get(sessionId) : undefined;
+      const existingAuth = sessionId ? sessionAuth.get(sessionId) : undefined;
+
+      if (existingAuth?.authToken) {
+        const incoming = parseBearerToken(req.headers.authorization);
+        if (!incoming || incoming !== existingAuth.authToken) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized', hint: 'Envie o mesmo Bearer token em todas as chamadas desta sessão.' }));
+          return;
+        }
+      }
 
       // Para requisições POST de inicialização, criar novo transport
       if (req.method === 'POST' && !transport) {
+        const mcpAuth = await requireMcpAuth(req, res);
+        if (!mcpAuth) return;
+
         sessionId = randomUUID();
         logger.info(`New MCP session: ${sessionId}`);
+
+        sessionAuth.set(sessionId, mcpAuth);
 
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => sessionId!,
@@ -304,6 +328,20 @@ export async function runHttpServer(): Promise<void> {
           const { name, arguments: args } = request.params;
           logger.debug(`CallTool request: ${name} (session: ${sessionId})`);
 
+          const ctx = sessionAuth.get(sessionId!);
+          if (ctx?.kind === 'license') {
+            const usage = await recordUsageWithLicensing(ctx.token, name);
+            if (!usage.allowed) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: usage.reason || 'Limite de uso excedido. Atualize seu plano ou tente amanhã.',
+                }],
+                isError: true,
+              };
+            }
+          }
+
           const result = await handleTool(name, args || {}, wsServer, pwManager, DRIVER);
           return {
             content: result.content,
@@ -326,6 +364,7 @@ export async function runHttpServer(): Promise<void> {
         transport.onclose = () => {
           logger.info(`MCP session closed: ${sessionId}`);
           transports.delete(sessionId!);
+          sessionAuth.delete(sessionId!);
         };
       }
 
@@ -333,6 +372,12 @@ export async function runHttpServer(): Promise<void> {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Session not found. Send a POST to initialize.' }));
         return;
+      }
+
+      if (sessionId && !sessionAuth.has(sessionId)) {
+        const mcpAuth = await requireMcpAuth(req, res);
+        if (!mcpAuth) return;
+        sessionAuth.set(sessionId, mcpAuth);
       }
 
       // Delegar para o transport

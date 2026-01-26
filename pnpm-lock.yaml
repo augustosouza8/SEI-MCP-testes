@@ -12,8 +12,8 @@ importers:
         specifier: ^1.8.0
         version: 1.25.3(hono@4.11.5)(zod@3.25.76)
       sei-playwright:
-        specifier: file:../sei-playwright
-        version: file:../sei-playwright
+        specifier: file:vendor/sei-playwright
+        version: file:vendor/sei-playwright
       ws:
         specifier: ^8.18.0
         version: 8.19.0
@@ -1096,8 +1096,8 @@ packages:
     resolution: {integrity: sha512-1n3r/tGXO6b6VXMdFT54SHzT9ytu9yr7TaELowdYpMqY/Ao7EnlQGmAQ1+RatX7Tkkdm6hONI2owqNx2aZj5Sw==}
     engines: {node: '>=11.0.0'}
 
-  sei-playwright@file:../sei-playwright:
-    resolution: {directory: ../sei-playwright, type: directory}
+  sei-playwright@file:vendor/sei-playwright:
+    resolution: {directory: vendor/sei-playwright, type: directory}
     engines: {node: '>=18'}
 
   send@1.2.1:
@@ -2260,7 +2260,7 @@ snapshots:
 
   sax@1.4.4: {}
 
-  sei-playwright@file:../sei-playwright:
+  sei-playwright@file:vendor/sei-playwright:
     dependencies:
       nodemailer: 7.0.12
       playwright: 1.58.0

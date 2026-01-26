@@ -5,6 +5,10 @@ export type AuthUser =
   | { type: 'token' }
   | { type: 'google'; email: string; name?: string; picture?: string; sub?: string };
 
+export type McpAuthContext =
+  | { kind: 'admin'; authToken: string | null }
+  | { kind: 'license'; authToken: string; token: string; email: string; userId?: string };
+
 function base64url(input: Buffer | string): string {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(input);
   return buf.toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -123,6 +127,13 @@ export function getAuthUser(req: IncomingMessage): AuthUser | null {
   };
 }
 
+export function parseBearerToken(authorization: string | undefined): string | null {
+  if (!authorization) return null;
+  if (!authorization.startsWith('Bearer ')) return null;
+  const token = authorization.slice('Bearer '.length).trim();
+  return token ? token : null;
+}
+
 export function requireAuth(req: IncomingMessage, res: ServerResponse): AuthUser | null {
   const require = (process.env.SEI_MCP_REQUIRE_AUTH ?? 'true').toLowerCase() !== 'false';
   if (!require) return { type: 'token' };
@@ -142,3 +153,195 @@ export function newOauthState(): string {
   return base64url(randomBytes(24));
 }
 
+// ============================================
+// Licensing API Integration
+// ============================================
+
+const LICENSING_API_URL = process.env.SEI_MCP_LICENSING_API_URL || 'https://sei-tribunais-licensing-api.onrender.com/api/v1';
+
+export interface LicensingUser {
+  email: string;
+  userId?: string;
+}
+
+export interface UsageResult {
+  allowed: boolean;
+  remaining: number;
+  usedToday: number;
+  limit?: number;
+  unlimited: boolean;
+  reason?: string;
+}
+
+/**
+ * Validate an API token against the licensing server.
+ * Returns user info if valid, null otherwise.
+ */
+export async function validateTokenWithLicensing(token: string): Promise<LicensingUser | null> {
+  try {
+    const response = await fetch(`${LICENSING_API_URL}/auth/api-token/validate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+
+    if (!response.ok) return null;
+
+    const data = await response.json() as { valid: boolean; email?: string; user_id?: string };
+    if (!data.valid || !data.email) return null;
+
+    return { email: data.email, userId: data.user_id };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Record usage against the licensing server.
+ * Returns whether the operation is allowed and remaining quota.
+ */
+export async function recordUsageWithLicensing(
+  token: string,
+  operationType?: string,
+): Promise<UsageResult> {
+  try {
+    const response = await fetch(`${LICENSING_API_URL}/usage/record`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        product: 'sei-mcp',
+        operation_type: operationType,
+        count: 1,
+      }),
+    });
+
+    if (!response.ok) {
+      return {
+        allowed: false,
+        remaining: 0,
+        usedToday: 0,
+        unlimited: false,
+        reason: 'Erro ao verificar licença',
+      };
+    }
+
+    const data = await response.json() as {
+      allowed: boolean;
+      remaining: number;
+      used_today: number;
+      limit?: number;
+      unlimited: boolean;
+      reason?: string;
+    };
+
+    return {
+      allowed: data.allowed,
+      remaining: data.remaining,
+      usedToday: data.used_today,
+      limit: data.limit,
+      unlimited: data.unlimited,
+      reason: data.reason,
+    };
+  } catch {
+    return {
+      allowed: false,
+      remaining: 0,
+      usedToday: 0,
+      unlimited: false,
+      reason: 'Erro de conexão com servidor de licenciamento',
+    };
+  }
+}
+
+/**
+ * Check usage without recording.
+ */
+export async function checkUsageWithLicensing(token: string): Promise<UsageResult> {
+  try {
+    const response = await fetch(`${LICENSING_API_URL}/usage/check`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({ product: 'sei-mcp' }),
+    });
+
+    if (!response.ok) {
+      return {
+        allowed: false,
+        remaining: 0,
+        usedToday: 0,
+        unlimited: false,
+        reason: 'Erro ao verificar licença',
+      };
+    }
+
+    const data = await response.json() as {
+      allowed: boolean;
+      remaining: number;
+      used_today: number;
+      limit?: number;
+      unlimited: boolean;
+      reason?: string;
+    };
+
+    return {
+      allowed: data.allowed,
+      remaining: data.remaining,
+      usedToday: data.used_today,
+      limit: data.limit,
+      unlimited: data.unlimited,
+      reason: data.reason,
+    };
+  } catch {
+    return {
+      allowed: false,
+      remaining: 0,
+      usedToday: 0,
+      unlimited: false,
+      reason: 'Erro de conexão com servidor de licenciamento',
+    };
+  }
+}
+
+export async function requireMcpAuth(req: IncomingMessage, res: ServerResponse): Promise<McpAuthContext | null> {
+  const require = (process.env.SEI_MCP_REQUIRE_AUTH ?? 'true').toLowerCase() !== 'false';
+  if (!require) return { kind: 'admin', authToken: null };
+
+  const incomingToken = parseBearerToken(req.headers.authorization);
+  if (!incomingToken) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'Unauthorized',
+      hint: 'Use Authorization: Bearer <api_token> (gerado no licensing / extensão) ou um token admin (SEI_MCP_BEARER_TOKEN).',
+    }));
+    return null;
+  }
+
+  const expectedToken = process.env.SEI_MCP_BEARER_TOKEN;
+  if (expectedToken && incomingToken === expectedToken) {
+    return { kind: 'admin', authToken: incomingToken };
+  }
+
+  const user = await validateTokenWithLicensing(incomingToken);
+  if (!user) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'Unauthorized',
+      hint: 'API token inválido/expirado. Gere um novo token na extensão (ou no licensing) e tente novamente.',
+    }));
+    return null;
+  }
+
+  return {
+    kind: 'license',
+    authToken: incomingToken,
+    token: incomingToken,
+    email: user.email,
+    userId: user.userId,
+  };
+}

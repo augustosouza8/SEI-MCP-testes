@@ -28,7 +28,7 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.8.0",
-    "sei-playwright": "file:../sei-playwright",
+    "sei-playwright": "file:vendor/sei-playwright",
     "ws": "^8.18.0",
     "zod": "^3.24.0",
     "zod-to-json-schema": "^3.24.0"
