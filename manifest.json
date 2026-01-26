@@ -1,0 +1,18 @@
+{
+  "manifest_version": "0.3",
+  "name": "sei-mcp",
+  "version": "1.0.0",
+  "display_name": "SEI - Sistema Eletrônico de Informações",
+  "description": "Automação completa do sistema SEI do governo brasileiro. Permite criar processos, documentos, assinar, tramitar e muito mais via Claude.",
+  "author": {
+    "name": "Nicholas Jacob"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"]
+    }
+  }
+}

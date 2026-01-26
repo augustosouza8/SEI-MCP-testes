@@ -21,6 +21,15 @@ MCP (Model Context Protocol) server + extensão Chrome para automação do siste
 Claude Code ←→ Servidor MCP ←→ WebSocket ←→ Extensão Chrome ←→ SEI
 ```
 
+## Driver (Extensão vs Playwright)
+
+Este projeto suporta dois modos de automação:
+
+- `extension` (padrão): usa a extensão Chrome via WebSocket.
+- `playwright`: usa Playwright diretamente (sem extensão). Ideal quando você quer abrir o SEI e automatizar sem depender do clique “Conectar”.
+
+Para usar Playwright, defina `SEI_MCP_DRIVER=playwright`.
+
 ## Instalação
 
 ### Opção 1: Desktop Extension (Recomendado - Um Clique)
@@ -117,6 +126,19 @@ mcpb pack build-mcpb sei-mcp.mcpb
 | SEI_MCP_WS_PORT | Porta do WebSocket | 19999 |
 | SEI_MCP_COMMAND_TIMEOUT_MS | Timeout padrão de comandos enviados à extensão | 30000 |
 | SEI_MCP_LOG_LEVEL | Nível de log (debug/info/warn/error) | info |
+| SEI_MCP_DRIVER | `extension` ou `playwright` | extension |
+| SEI_MCP_PW_HEADLESS | Playwright headless (1/0) | 1 |
+| SEI_MCP_PW_PERSISTENT | Manter perfil (1/0) | 1 |
+| SEI_MCP_PW_CHANNEL | Canal do navegador (ex: `chrome`) | (vazio) |
+| SEI_MCP_REQUIRE_AUTH | Exigir auth no HTTP (`true/false`) | true |
+| SEI_MCP_BEARER_TOKEN | Token estático (Authorization Bearer) | (vazio) |
+| SEI_MCP_JWT_SECRET | Segredo JWT para login Google | (vazio) |
+| SEI_MCP_PUBLIC_BASE_URL | Base URL pública do servidor HTTP | http://localhost:3100 |
+| SEI_MCP_GOOGLE_CLIENT_ID | Google OAuth Client ID | (vazio) |
+| SEI_MCP_GOOGLE_CLIENT_SECRET | Google OAuth Client Secret | (vazio) |
+| SEI_MCP_STRIPE_SECRET_KEY | Stripe Secret Key | (vazio) |
+| SEI_MCP_STRIPE_PRICE_STARTER_MONTHLY | Stripe Price ID Starter | (vazio) |
+| SEI_MCP_STRIPE_PRICE_PRO_MONTHLY | Stripe Price ID Pro | (vazio) |
 
 ## Segurança
 

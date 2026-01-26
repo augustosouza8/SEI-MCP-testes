@@ -8,12 +8,17 @@ import { SeiWebSocketServer } from './websocket/server.js';
 import { allTools, toolCount } from './tools/all-tools.js';
 import { handleTool } from './tools/index.js';
 import { logger } from './utils/logger.js';
+import { SeiPlaywrightManager } from './playwright/manager.js';
 
 const WS_PORT = parseInt(process.env.SEI_MCP_WS_PORT || '19999', 10);
+const DRIVER = ((process.env.SEI_MCP_DRIVER || 'extension').toLowerCase() === 'playwright')
+  ? 'playwright'
+  : 'extension';
 
 export async function createServer(): Promise<{ server: Server; wsServer: SeiWebSocketServer }> {
   // Criar servidor WebSocket para comunicação com extensão
   const wsServer = new SeiWebSocketServer(WS_PORT);
+  const pwManager = new SeiPlaywrightManager();
 
   // Criar servidor MCP
   const server = new Server(
@@ -39,7 +44,7 @@ export async function createServer(): Promise<{ server: Server; wsServer: SeiWeb
     const { name, arguments: args } = request.params;
     logger.debug(`CallTool request: ${name}`, args);
 
-    const result = await handleTool(name, args || {}, wsServer);
+    const result = await handleTool(name, args || {}, wsServer, pwManager, DRIVER);
 
     return {
       content: result.content,
@@ -59,14 +64,19 @@ export async function runServer(): Promise<void> {
   const { server, wsServer } = await createServer();
 
   // Iniciar WebSocket server
-  await wsServer.start();
+  if (DRIVER === 'extension') {
+    await wsServer.start();
+  } else {
+    logger.info('Driver Playwright ativo; WebSocket da extensão não é necessário (não será iniciado).');
+  }
 
   // Conectar ao transporte stdio
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
   logger.info('SEI-MCP server started');
-  logger.info(`WebSocket server listening on port ${WS_PORT}`);
+  logger.info(`Driver: ${DRIVER}`);
+  if (DRIVER === 'extension') logger.info(`WebSocket server listening on port ${WS_PORT}`);
   logger.info(`Available tools: ${toolCount} (including session and window control)`);
 
   // Graceful shutdown
