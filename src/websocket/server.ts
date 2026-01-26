@@ -9,6 +9,12 @@ const DEFAULT_COMMAND_TIMEOUT = parseInt(process.env.SEI_MCP_COMMAND_TIMEOUT_MS 
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 const HEARTBEAT_TIMEOUT = 5000; // 5 seconds
 
+// Retry configuration
+const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_RETRY_BASE_DELAY = 500; // ms
+const DEFAULT_RETRY_MAX_DELAY = 4000; // ms
+const RETRYABLE_ERRORS = ['ETIMEDOUT', 'ECONNRESET', 'EPIPE', 'Command timeout'];
+
 interface PendingCommand {
   resolve: (response: WSResponse) => void;
   reject: (error: Error) => void;
@@ -174,9 +180,76 @@ export class SeiWebSocketServer {
   }
 
   /**
+   * Calculate delay for retry with exponential backoff
+   */
+  private getRetryDelay(attempt: number): number {
+    const delay = Math.min(
+      DEFAULT_RETRY_BASE_DELAY * Math.pow(2, attempt),
+      DEFAULT_RETRY_MAX_DELAY
+    );
+    // Add jitter (±20%) to prevent thundering herd
+    const jitter = delay * 0.2 * (Math.random() - 0.5);
+    return Math.round(delay + jitter);
+  }
+
+  /**
+   * Check if error is retryable
+   */
+  private isRetryableError(error: Error): boolean {
+    const message = error.message || '';
+    return RETRYABLE_ERRORS.some(e => message.includes(e));
+  }
+
+  /**
+   * Sleep utility for retry delays
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
    * Send command to a specific session or the default session
+   * With automatic retry and exponential backoff for transient errors
    */
   async sendCommand(
+    action: string,
+    params: Record<string, unknown> = {},
+    sessionId?: string
+  ): Promise<WSResponse> {
+    const maxRetries = typeof params.max_retries === 'number' ? params.max_retries : DEFAULT_MAX_RETRIES;
+
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.sendCommandOnce(action, params, sessionId);
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        // Don't retry non-retryable errors
+        if (!this.isRetryableError(lastError)) {
+          throw lastError;
+        }
+
+        // Don't retry on last attempt
+        if (attempt < maxRetries) {
+          const delay = this.getRetryDelay(attempt);
+          logger.warn(`Command failed, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`, {
+            action,
+            error: lastError.message,
+          });
+          await this.sleep(delay);
+        }
+      }
+    }
+
+    throw lastError || new Error(`Command failed after ${maxRetries} retries: ${action}`);
+  }
+
+  /**
+   * Send a single command (internal, no retry)
+   */
+  private async sendCommandOnce(
     action: string,
     params: Record<string, unknown> = {},
     sessionId?: string
@@ -204,6 +277,7 @@ export class SeiWebSocketServer {
     // Do not forward server-only params to the extension
     const forwardedParams = { ...params } as Record<string, unknown>;
     delete forwardedParams.timeout_ms;
+    delete forwardedParams.max_retries;
 
     const command: WSCommand = {
       id,

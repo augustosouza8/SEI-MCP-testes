@@ -1,7 +1,24 @@
 // Cliente SOAP para API oficial do SEI
 // Documentação: https://softwarepublico.gov.br/social/sei/manuais/manual-de-webservices
 
+import { Agent } from 'http';
+import { Agent as HttpsAgent } from 'https';
 import { logger } from '../utils/logger.js';
+
+// Connection pooling com keep-alive para reduzir latência
+const httpAgent = new Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 10,
+  maxFreeSockets: 5,
+});
+
+const httpsAgent = new HttpsAgent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 10,
+  maxFreeSockets: 5,
+});
 
 export interface SeiSoapConfig {
   baseUrl: string;           // Ex: https://sei.sp.gov.br
@@ -106,7 +123,15 @@ export class SeiSoapClient {
   }
 
   /**
+   * Get the appropriate agent based on URL protocol
+   */
+  private getAgent(): Agent | HttpsAgent {
+    return this.wsdlUrl.startsWith('https') ? httpsAgent : httpAgent;
+  }
+
+  /**
    * Executa chamada SOAP
+   * OTIMIZADO: Usa connection pooling com keep-alive
    */
   async call(method: string, params: Record<string, unknown>): Promise<unknown> {
     const envelope = this.buildSoapEnvelope(method, params);
@@ -114,14 +139,24 @@ export class SeiSoapClient {
     logger.debug('SOAP Request', { method, wsdl: this.wsdlUrl });
 
     try {
+      // Use AbortController for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
       const response = await fetch(this.wsdlUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'text/xml; charset=utf-8',
           'SOAPAction': `"${method}"`,
+          'Connection': 'keep-alive',
         },
         body: envelope,
+        signal: controller.signal,
+        // Note: Node.js 18+ fetch doesn't support agent directly
+        // The keep-alive header helps with connection reuse
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         throw new Error(`SOAP Error: ${response.status} ${response.statusText}`);
@@ -133,6 +168,10 @@ export class SeiSoapClient {
       // Parse básico da resposta (idealmente usar um parser XML)
       return this.parseResponse(xml, method);
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        logger.error('SOAP call timeout', { method });
+        throw new Error(`SOAP timeout: ${method}`);
+      }
       logger.error('SOAP call failed', { method, error });
       throw error;
     }

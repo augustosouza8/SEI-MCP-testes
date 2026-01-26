@@ -325,17 +325,87 @@ export function detectSeiPage(url: string): string {
 }
 
 /**
+ * Cache para seletores Playwright com TTL de 5 minutos
+ * Evita recompilação de seletores frequentes
+ */
+const SELECTOR_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const selectorCache = new Map<string, { value: string; expires: number }>();
+
+/**
+ * Gera chave única para cache do seletor
+ */
+function getSelectorCacheKey(selector: SemanticSelector): string {
+  const nameStr = selector.name instanceof RegExp
+    ? selector.name.toString()
+    : (selector.name || '');
+  return `${selector.role}:${nameStr}:${selector.fallbackCss || ''}`;
+}
+
+/**
+ * Limpa entradas expiradas do cache (chamado periodicamente)
+ */
+function cleanupSelectorCache(): void {
+  const now = Date.now();
+  for (const [key, entry] of selectorCache) {
+    if (entry.expires < now) {
+      selectorCache.delete(key);
+    }
+  }
+}
+
+// Limpar cache a cada 5 minutos
+setInterval(cleanupSelectorCache, SELECTOR_CACHE_TTL);
+
+/**
  * Converte SemanticSelector para código Playwright
  * Usado para gerar instruções para a extensão/content script
+ *
+ * OTIMIZADO: Usa cache memoizado para evitar recompilação
  */
 export function toPlaywrightLocator(selector: SemanticSelector): string {
+  const cacheKey = getSelectorCacheKey(selector);
+  const now = Date.now();
+
+  // Check cache
+  const cached = selectorCache.get(cacheKey);
+  if (cached && cached.expires > now) {
+    return cached.value;
+  }
+
+  // Generate locator
   const { role, name } = selector;
+  let result: string;
 
   if (name instanceof RegExp) {
-    return `getByRole('${role}', { name: ${name} })`;
+    result = `getByRole('${role}', { name: ${name} })`;
   } else if (name) {
-    return `getByRole('${role}', { name: '${name}' })`;
+    result = `getByRole('${role}', { name: '${name}' })`;
   } else {
-    return `getByRole('${role}')`;
+    result = `getByRole('${role}')`;
   }
+
+  // Store in cache
+  selectorCache.set(cacheKey, {
+    value: result,
+    expires: now + SELECTOR_CACHE_TTL,
+  });
+
+  return result;
+}
+
+/**
+ * Get cache stats for debugging
+ */
+export function getSelectorCacheStats(): { size: number; ttlMs: number } {
+  return {
+    size: selectorCache.size,
+    ttlMs: SELECTOR_CACHE_TTL,
+  };
+}
+
+/**
+ * Clear selector cache (for testing or forced refresh)
+ */
+export function clearSelectorCache(): void {
+  selectorCache.clear();
 }

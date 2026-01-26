@@ -4,6 +4,32 @@ import type { SeiWebSocketServer } from '../websocket/server.js';
 import type { ToolResult } from '../types/index.js';
 import { logger } from '../utils/logger.js';
 import { spawn } from 'child_process';
+import type { SeiPlaywrightManager } from '../playwright/manager.js';
+
+// Smart Wait configuration
+const SMART_WAIT_ENABLED = process.env.SEI_MCP_SMART_WAIT !== 'false';
+const SMART_WAIT_STABILITY_MS = parseInt(process.env.SEI_MCP_STABILITY_MS || '300', 10);
+const SMART_WAIT_MAX_MS = parseInt(process.env.SEI_MCP_MAX_WAIT_MS || '5000', 10);
+
+// Tools that benefit from smart wait (DOM interaction tools)
+const SMART_WAIT_TOOLS = [
+  'sei_login',
+  'sei_search_process',
+  'sei_create_document',
+  'sei_sign_document',
+  'sei_forward_process',
+  'sei_click',
+  'sei_type',
+  'sei_select',
+  'sei_fill',
+];
+
+/**
+ * Check if tool should use smart wait
+ */
+function shouldUseSmartWait(toolName: string): boolean {
+  return SMART_WAIT_ENABLED && SMART_WAIT_TOOLS.includes(toolName);
+}
 
 // Schemas de entrada das ferramentas
 export const schemas = {
@@ -148,9 +174,14 @@ const WINDOW_TOOLS = [
 export async function handleTool(
   name: string,
   args: Record<string, unknown>,
-  wsServer: SeiWebSocketServer
+  wsServer: SeiWebSocketServer,
+  pwManager?: SeiPlaywrightManager,
+  driver?: 'extension' | 'playwright'
 ): Promise<ToolResult> {
   logger.info(`Executing tool: ${name}`, args);
+
+  const resolvedDriver: 'extension' | 'playwright' =
+    driver ?? ((process.env.SEI_MCP_DRIVER || '').toLowerCase() === 'playwright' ? 'playwright' : 'extension');
 
   // Handle local tools first (no extension needed)
   if (LOCAL_TOOLS.includes(name)) {
@@ -159,7 +190,64 @@ export async function handleTool(
 
   // Handle session management tools (server-side, no extension needed)
   if (SESSION_TOOLS.includes(name)) {
+    if (resolvedDriver === 'playwright') {
+      if (!pwManager) {
+        return {
+          content: [{ type: 'text', text: 'Erro: driver Playwright não inicializado no servidor' }],
+          isError: true,
+        };
+      }
+      return handlePlaywrightSessionTool(name, args, pwManager);
+    }
     return handleSessionTool(name, args, wsServer);
+  }
+
+  // Playwright driver: execute directly (no extension)
+  if (resolvedDriver === 'playwright') {
+    if (!pwManager) {
+      return {
+        content: [{ type: 'text', text: 'Erro: driver Playwright não inicializado no servidor' }],
+        isError: true,
+      };
+    }
+
+    const sessionId = args.session_id as string | undefined;
+    const forwardedArgs = { ...args } as Record<string, unknown>;
+    delete forwardedArgs.session_id;
+
+    try {
+      const data = await pwManager.executeTool(name, forwardedArgs, sessionId);
+
+      // Screenshot returns image in base64
+      if (name === 'sei_screenshot' && data && typeof data === 'object' && 'image' in (data as any)) {
+        const d = data as { image: string; mimeType?: string };
+        return {
+          content: [
+            {
+              type: 'image',
+              data: d.image,
+              mimeType: d.mimeType || 'image/png',
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: typeof data === 'string' ? data : JSON.stringify(data, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Erro desconhecido';
+      logger.error(`Tool error (playwright): ${name}`, { error: message });
+      return {
+        content: [{ type: 'text', text: `Erro ao executar ${name}: ${message}` }],
+        isError: true,
+      };
+    }
   }
 
   // For all other tools, check connection first
@@ -192,6 +280,22 @@ export async function handleTool(
     // Don't forward server-only routing param to the extension
     const forwardedArgs = { ...args } as Record<string, unknown>;
     delete forwardedArgs.session_id;
+
+    // Smart Wait: Wait for page stability before DOM operations
+    if (shouldUseSmartWait(name)) {
+      try {
+        logger.debug(`Smart Wait: waiting for page stability before ${name}`);
+        await wsServer.sendCommand('sei_wait_for_stable', {
+          stability_ms: SMART_WAIT_STABILITY_MS,
+          max_wait_ms: SMART_WAIT_MAX_MS,
+        }, sessionId);
+      } catch (waitError) {
+        // Log but don't fail - the tool may still work
+        logger.warn(`Smart Wait failed for ${name}, proceeding anyway`, {
+          error: waitError instanceof Error ? waitError.message : String(waitError),
+        });
+      }
+    }
 
     const response = await wsServer.sendCommand(name, forwardedArgs, sessionId);
 
@@ -244,6 +348,68 @@ export async function handleTool(
       ],
       isError: true,
     };
+  }
+}
+
+function handlePlaywrightSessionTool(
+  name: string,
+  args: Record<string, unknown>,
+  pwManager: SeiPlaywrightManager
+): ToolResult {
+  try {
+    switch (name) {
+      case 'sei_list_sessions': {
+        const sessions = pwManager.listSessions();
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ total: sessions.length, connected: pwManager.getConnectedCount(), sessions }, null, 2) }],
+        };
+      }
+
+      case 'sei_get_session_info': {
+        const sessionId = args.session_id as string | undefined;
+        const sessions = pwManager.listSessions();
+        const session = sessionId
+          ? sessions.find((s) => s.id === sessionId)
+          : sessions[0];
+        return {
+          content: [{ type: 'text', text: JSON.stringify(session ?? null, null, 2) }],
+        };
+      }
+
+      case 'sei_close_session': {
+        const sessionId = args.session_id as string | undefined;
+        if (!sessionId) {
+          return { content: [{ type: 'text', text: 'Erro: session_id é obrigatório' }], isError: true };
+        }
+        // Fire-and-forget close
+        void pwManager.closeSession(sessionId);
+        return { content: [{ type: 'text', text: `Sessão fechada: ${sessionId}` }] };
+      }
+
+      case 'sei_switch_session': {
+        const sessionId = args.session_id as string | undefined;
+        if (!sessionId) {
+          return { content: [{ type: 'text', text: 'Erro: session_id é obrigatório' }], isError: true };
+        }
+        const ok = pwManager.switchSession(sessionId);
+        return ok
+          ? { content: [{ type: 'text', text: `Sessão ativa: ${sessionId}` }] }
+          : { content: [{ type: 'text', text: `Sessão não encontrada ou desconectada: ${sessionId}` }], isError: true };
+      }
+
+      case 'sei_get_connection_status': {
+        const sessionId = args.session_id as string | undefined;
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ driver: 'playwright', connected: pwManager.isConnected(sessionId), session_id: sessionId }, null, 2) }],
+        };
+      }
+
+      default:
+        return { content: [{ type: 'text', text: `Ferramenta de sessão desconhecida: ${name}` }], isError: true };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Erro desconhecido';
+    return { content: [{ type: 'text', text: `Erro ao executar ${name}: ${message}` }], isError: true };
   }
 }
 
