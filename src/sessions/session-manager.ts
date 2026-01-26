@@ -15,6 +15,36 @@ export class SessionManager {
   private sessions: Map<string, SessionContext> = new Map();
   private clients: Map<string, ClientConnection> = new Map();
 
+  private getMostRecentConnectedSession(): SessionContext | undefined {
+    let best: SessionContext | undefined;
+    for (const session of this.sessions.values()) {
+      if (session.status !== 'connected') continue;
+      if (!best) {
+        best = session;
+        continue;
+      }
+      if (session.metadata.lastActivity > best.metadata.lastActivity) {
+        best = session;
+      }
+    }
+    return best;
+  }
+
+  private getMostRecentOpenClient(): ClientConnection | undefined {
+    let best: ClientConnection | undefined;
+    for (const client of this.clients.values()) {
+      if (client.ws.readyState !== WebSocket.OPEN) continue;
+      if (!best) {
+        best = client;
+        continue;
+      }
+      if (client.lastActivity > best.lastActivity) {
+        best = client;
+      }
+    }
+    return best;
+  }
+
   /**
    * Create a new session
    */
@@ -105,24 +135,14 @@ export class SessionManager {
    * Get the default (first connected) session
    */
   getDefaultSession(): SessionContext | undefined {
-    for (const session of this.sessions.values()) {
-      if (session.status === 'connected') {
-        return session;
-      }
-    }
-    return undefined;
+    return this.getMostRecentConnectedSession();
   }
 
   /**
    * Get the default (first connected) client
    */
   getDefaultClient(): ClientConnection | undefined {
-    for (const client of this.clients.values()) {
-      if (client.ws.readyState === WebSocket.OPEN) {
-        return client;
-      }
-    }
-    return undefined;
+    return this.getMostRecentOpenClient();
   }
 
   /**
@@ -163,6 +183,12 @@ export class SessionManager {
       session.metadata = { ...session.metadata, ...updates };
       session.metadata.lastActivity = new Date();
     }
+
+    const client = this.clients.get(sessionId);
+    if (client) {
+      client.lastActivity = new Date();
+      this.clients.set(sessionId, client);
+    }
   }
 
   /**
@@ -173,6 +199,12 @@ export class SessionManager {
     if (session) {
       session.status = status;
       session.metadata.lastActivity = new Date();
+    }
+
+    const client = this.clients.get(sessionId);
+    if (client) {
+      client.lastActivity = new Date();
+      this.clients.set(sessionId, client);
     }
   }
 

@@ -3,7 +3,26 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 
 // ===== SCHEMAS DE TODAS AS FERRAMENTAS =====
 
-export const schemas = {
+const COMMON_FIELDS = {
+  session_id: z.string().optional().describe('ID da sessão (usa default se omitido)'),
+  timeout_ms: z.number().optional().describe('Timeout do comando em ms (server-side; padrão via SEI_MCP_COMMAND_TIMEOUT_MS)'),
+};
+
+const COMMON_EXCEPTIONS = new Set<string>([
+  // Estes schemas precisam manter session_id obrigatório
+  'sei_close_session',
+  'sei_switch_session',
+]);
+
+function withCommonFields(name: string, schema: z.ZodTypeAny): z.ZodTypeAny {
+  if (COMMON_EXCEPTIONS.has(name)) return schema;
+  if (schema instanceof z.ZodObject) {
+    return schema.extend(COMMON_FIELDS);
+  }
+  return schema;
+}
+
+const baseSchemas = {
   // === AUTENTICAÇÃO ===
   sei_login: z.object({
     url: z.string().url().describe('URL base do SEI (ex: https://sei.sp.gov.br)'),
@@ -301,6 +320,11 @@ export const schemas = {
 
   sei_get_current_page: z.object({}).describe('Retorna informações da página atual'),
 
+  // === SISTEMA (SERVER-SIDE) ===
+  sei_open_url: z.object({
+    url: z.string().url().describe('URL para abrir no navegador (http/https)'),
+  }).describe('Abre uma URL no navegador do sistema (não requer extensão)'),
+
   // === NAVEGAÇÃO ===
   sei_navigate: z.object({
     target: z.enum([
@@ -374,6 +398,10 @@ export const schemas = {
     session_id: z.string().optional().describe('ID da sessão (usa default se omitido)'),
   }).describe('Retorna status da conexão WebSocket'),
 };
+
+export const schemas = Object.fromEntries(
+  Object.entries(baseSchemas).map(([name, schema]) => [name, withCommonFields(name, schema)])
+) as typeof baseSchemas;
 
 // ===== DEFINIÇÕES DAS FERRAMENTAS =====
 
@@ -456,6 +484,7 @@ export const allTools = [
   { name: 'sei_screenshot', description: 'Captura screenshot da página atual', inputSchema: zodToJsonSchema(schemas.sei_screenshot) },
   { name: 'sei_snapshot', description: 'Captura estado da página (árvore de acessibilidade)', inputSchema: zodToJsonSchema(schemas.sei_snapshot) },
   { name: 'sei_get_current_page', description: 'Retorna URL e informações da página atual', inputSchema: zodToJsonSchema(schemas.sei_get_current_page) },
+  { name: 'sei_open_url', description: 'Abre uma URL no navegador do sistema (server-side; não requer extensão)', inputSchema: zodToJsonSchema(schemas.sei_open_url) },
 
   // Navegação
   { name: 'sei_navigate', description: 'Navega para página específica do SEI', inputSchema: zodToJsonSchema(schemas.sei_navigate) },

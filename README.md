@@ -23,7 +23,17 @@ Claude Code ←→ Servidor MCP ←→ WebSocket ←→ Extensão Chrome ←→ 
 
 ## Instalação
 
-### 1. Servidor MCP
+### Opção 1: Desktop Extension (Recomendado - Um Clique)
+
+1. Baixe o arquivo `sei-mcp.mcpb` da [Releases](https://github.com/nicholasjacob/sei-mcp/releases)
+2. No **Claude Desktop**: Settings > Extensions > Advanced settings
+3. Clique em **"Install Extension..."**
+4. Selecione o arquivo `sei-mcp.mcpb`
+5. Pronto!
+
+### Opção 2: Instalação Manual
+
+#### 1. Servidor MCP
 
 ```bash
 cd sei-mcp
@@ -31,14 +41,7 @@ pnpm install
 pnpm build
 ```
 
-### 2. Extensão Chrome
-
-1. Abra `chrome://extensions/`
-2. Ative "Modo do desenvolvedor"
-3. Clique em "Carregar sem compactação"
-4. Selecione a pasta `extension/`
-
-### 3. Configurar no Claude Code
+#### 2. Configurar no Claude Code
 
 Adicione ao `~/.claude.json`:
 
@@ -55,6 +58,13 @@ Adicione ao `~/.claude.json`:
   }
 }
 ```
+
+### Extensão Chrome (Necessária para ambas opções)
+
+1. Abra `chrome://extensions/`
+2. Ative "Modo do desenvolvedor"
+3. Clique em "Carregar sem compactação"
+4. Selecione a pasta `extension/`
 
 ## Uso
 
@@ -74,6 +84,13 @@ Liste os documentos do processo
 Crie um ofício de resposta com o texto: "Em atenção ao solicitado..."
 ```
 
+### Dicas de navegação (estabilidade)
+
+- Se você tiver mais de uma aba/janela do SEI aberta, use `sei_list_sessions` e passe `session_id` nas chamadas para garantir que os comandos vão para a aba certa.
+- Para operações lentas (login, busca, download, assinatura), passe `timeout_ms` (por chamada) ou ajuste o padrão via `SEI_MCP_COMMAND_TIMEOUT_MS`.
+- Se houver cliques “perdidos” por falta de foco, chame `sei_focus_window` antes do fluxo.
+- Se o SEI ainda não estiver aberto no navegador, você pode usar `sei_open_url` para abrir a URL (não requer extensão; útil antes de conectar).
+
 ## Desenvolvimento
 
 ```bash
@@ -85,6 +102,12 @@ npx @anthropic-ai/mcp-inspector
 
 # Build
 pnpm build
+
+# Criar pacote .mcpb (Desktop Extension)
+./scripts/build-mcpb.sh
+# Ou manualmente:
+npm install -g @anthropic-ai/mcpb
+mcpb pack build-mcpb sei-mcp.mcpb
 ```
 
 ## Variáveis de Ambiente
@@ -92,6 +115,7 @@ pnpm build
 | Variável | Descrição | Padrão |
 |----------|-----------|--------|
 | SEI_MCP_WS_PORT | Porta do WebSocket | 19999 |
+| SEI_MCP_COMMAND_TIMEOUT_MS | Timeout padrão de comandos enviados à extensão | 30000 |
 | SEI_MCP_LOG_LEVEL | Nível de log (debug/info/warn/error) | info |
 
 ## Segurança

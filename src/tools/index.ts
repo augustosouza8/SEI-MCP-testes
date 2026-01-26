@@ -3,6 +3,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { SeiWebSocketServer } from '../websocket/server.js';
 import type { ToolResult } from '../types/index.js';
 import { logger } from '../utils/logger.js';
+import { spawn } from 'child_process';
 
 // Schemas de entrada das ferramentas
 export const schemas = {
@@ -129,6 +130,11 @@ const SESSION_TOOLS = [
   'sei_get_connection_status',
 ];
 
+// Local/server-side tools (no extension needed)
+const LOCAL_TOOLS = [
+  'sei_open_url',
+];
+
 // Window control tools (forwarded to Chrome extension)
 const WINDOW_TOOLS = [
   'sei_minimize_window',
@@ -146,6 +152,11 @@ export async function handleTool(
 ): Promise<ToolResult> {
   logger.info(`Executing tool: ${name}`, args);
 
+  // Handle local tools first (no extension needed)
+  if (LOCAL_TOOLS.includes(name)) {
+    return handleLocalTool(name, args);
+  }
+
   // Handle session management tools (server-side, no extension needed)
   if (SESSION_TOOLS.includes(name)) {
     return handleSessionTool(name, args, wsServer);
@@ -154,11 +165,23 @@ export async function handleTool(
   // For all other tools, check connection first
   const sessionId = args.session_id as string | undefined;
   if (!wsServer.isConnected(sessionId)) {
+    const sessions = wsServer.listSessions();
+    const connected = sessions.filter((s) => s.status === 'connected');
     return {
       content: [
         {
           type: 'text',
-          text: `Erro: Extensão do Chrome não conectada${sessionId ? ` para sessão ${sessionId}` : ''}. Por favor:\n1. Abra o SEI no Chrome\n2. Clique no ícone da extensão SEI-MCP\n3. Clique em "Conectar"`,
+          text:
+            `Erro: Extensão do Chrome não conectada${sessionId ? ` para sessão ${sessionId}` : ''}.\n\n` +
+            `Como resolver:\n` +
+            `1. Abra o SEI no Chrome\n` +
+            `2. Clique no ícone da extensão SEI-MCP\n` +
+            `3. Clique em "Conectar"\n\n` +
+            (connected.length
+              ? `Sessões conectadas disponíveis (use \`session_id\` para escolher):\n${connected
+                .map((s) => `- ${s.id}${s.url ? ` (${s.url})` : ''}${s.user ? ` [${s.user}]` : ''}`)
+                .join('\n')}`
+              : `Dica: chame \`sei_list_sessions\` para ver sessões detectadas.`),
         },
       ],
       isError: true,
@@ -166,7 +189,11 @@ export async function handleTool(
   }
 
   try {
-    const response = await wsServer.sendCommand(name, args, sessionId);
+    // Don't forward server-only routing param to the extension
+    const forwardedArgs = { ...args } as Record<string, unknown>;
+    delete forwardedArgs.session_id;
+
+    const response = await wsServer.sendCommand(name, forwardedArgs, sessionId);
 
     if (!response.success) {
       return {
@@ -215,6 +242,71 @@ export async function handleTool(
           text: `Erro ao executar ${name}: ${message}`,
         },
       ],
+      isError: true,
+    };
+  }
+}
+
+function openUrlInSystemBrowser(url: string): void {
+  const platform = process.platform;
+  if (platform === 'darwin') {
+    const child = spawn('open', [url], { detached: true, stdio: 'ignore' });
+    child.unref();
+    return;
+  }
+  if (platform === 'win32') {
+    const child = spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' });
+    child.unref();
+    return;
+  }
+  const child = spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
+  child.unref();
+}
+
+function handleLocalTool(name: string, args: Record<string, unknown>): ToolResult {
+  try {
+    switch (name) {
+      case 'sei_open_url': {
+        const urlRaw = args.url;
+        if (typeof urlRaw !== 'string') {
+          return {
+            content: [{ type: 'text', text: 'Erro: url é obrigatório' }],
+            isError: true,
+          };
+        }
+
+        let parsed: URL;
+        try {
+          parsed = new URL(urlRaw);
+        } catch {
+          return {
+            content: [{ type: 'text', text: `Erro: URL inválida: ${urlRaw}` }],
+            isError: true,
+          };
+        }
+
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          return {
+            content: [{ type: 'text', text: 'Erro: apenas URLs http/https são permitidas' }],
+            isError: true,
+          };
+        }
+
+        openUrlInSystemBrowser(parsed.toString());
+        return {
+          content: [{ type: 'text', text: `OK: aberto no navegador: ${parsed.toString()}` }],
+        };
+      }
+      default:
+        return {
+          content: [{ type: 'text', text: `Erro: ferramenta local desconhecida: ${name}` }],
+          isError: true,
+        };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Erro desconhecido';
+    return {
+      content: [{ type: 'text', text: `Erro ao executar ${name}: ${message}` }],
       isError: true,
     };
   }

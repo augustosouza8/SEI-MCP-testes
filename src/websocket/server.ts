@@ -5,7 +5,7 @@ import { sessionManager } from '../sessions/session-manager.js';
 import type { WSCommand, WSResponse, WSEvent, ReconnectConfig } from '../types/index.js';
 
 const DEFAULT_PORT = 19999;
-const COMMAND_TIMEOUT = 30000; // 30 seconds
+const DEFAULT_COMMAND_TIMEOUT = parseInt(process.env.SEI_MCP_COMMAND_TIMEOUT_MS || '30000', 10); // 30 seconds
 const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 const HEARTBEAT_TIMEOUT = 5000; // 5 seconds
 
@@ -31,9 +31,9 @@ export class SeiWebSocketServer {
   constructor(private port: number = DEFAULT_PORT) {}
 
   async start(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       try {
-        this.wss = new WebSocketServer({ port: this.port });
+        this.wss = new WebSocketServer({ host: '0.0.0.0', port: this.port });
 
         this.wss.on('listening', () => {
           logger.info(`WebSocket server listening on port ${this.port}`);
@@ -44,12 +44,20 @@ export class SeiWebSocketServer {
           this.handleConnection(ws, req);
         });
 
-        this.wss.on('error', (err) => {
-          logger.error('WebSocket server error', err);
-          reject(err);
+        this.wss.on('error', (err: NodeJS.ErrnoException) => {
+          if (err.code === 'EADDRINUSE') {
+            logger.warn(`Port ${this.port} already in use. MCP server will work but Chrome extension won't connect to this instance.`);
+            logger.warn('To fix: close other sei-mcp instances or use a different port via SEI_MCP_WS_PORT env var.');
+            this.wss = null;
+            resolve(); // Don't crash - MCP can still work
+          } else {
+            logger.error('WebSocket server error', err);
+            resolve(); // Still don't crash the MCP server
+          }
         });
       } catch (err) {
-        reject(err);
+        logger.error('Failed to create WebSocket server', err);
+        resolve(); // Don't crash the MCP server
       }
     });
   }
@@ -97,22 +105,35 @@ export class SeiWebSocketServer {
     });
 
     ws.on('pong', () => {
-      sessionManager.updateSession(sessionId, { lastActivity: new Date() });
+      sessionManager.updateSession(sessionId, {});
     });
   }
 
   private handleMessage(message: WSResponse | WSEvent, sessionId: string): void {
+    // Any message implies activity
+    sessionManager.updateSession(sessionId, {});
+
     if (message.type === 'event') {
       const event = message as WSEvent;
       logger.debug(`Received event from ${sessionId}: ${event.event}`, event.data);
 
       // Handle special events
-      if (event.event === 'login_detected' && event.data) {
+      if (event.event === 'connected') {
+        sessionManager.updateStatus(sessionId, 'connected');
+      } else if (event.event === 'disconnected') {
+        sessionManager.updateStatus(sessionId, 'disconnected');
+      } else if (event.event === 'login_detected' && event.data) {
         const data = event.data as { user?: string; url?: string };
         sessionManager.updateSession(sessionId, {
           user: data.user,
           url: data.url,
         });
+      } else if (event.event === 'logout_detected') {
+        sessionManager.updateSession(sessionId, { user: undefined });
+      } else if (event.event === 'page_changed' && event.data) {
+        const data = event.data as { url?: string } | string;
+        const url = typeof data === 'string' ? data : data.url;
+        if (url) sessionManager.updateSession(sessionId, { url });
       }
       return;
     }
@@ -173,19 +194,30 @@ export class SeiWebSocketServer {
     }
 
     const id = `cmd_${++this.commandCounter}_${Date.now()}`;
+
+    // Support Playwright-like per-action timeouts, without leaking param downstream
+    const requestedTimeout = params.timeout_ms;
+    const timeoutMs = typeof requestedTimeout === 'number' && Number.isFinite(requestedTimeout)
+      ? Math.max(0, requestedTimeout)
+      : DEFAULT_COMMAND_TIMEOUT;
+
+    // Do not forward server-only params to the extension
+    const forwardedParams = { ...params } as Record<string, unknown>;
+    delete forwardedParams.timeout_ms;
+
     const command: WSCommand = {
       id,
       type: 'command',
       action,
-      params,
+      params: forwardedParams,
       sessionId: client.sessionId,
     };
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pendingCommands.delete(id);
-        reject(new Error(`Command timeout: ${action}`));
-      }, COMMAND_TIMEOUT);
+        reject(new Error(`Command timeout after ${timeoutMs}ms: ${action} (use timeout_ms or SEI_MCP_COMMAND_TIMEOUT_MS)`));
+      }, timeoutMs);
 
       this.pendingCommands.set(id, {
         resolve,
@@ -195,8 +227,9 @@ export class SeiWebSocketServer {
       });
 
       try {
+        sessionManager.updateSession(client.sessionId, {});
         client.ws.send(JSON.stringify(command));
-        logger.debug(`Sent command to ${client.sessionId}: ${action}`, params);
+        logger.debug(`Sent command to ${client.sessionId}: ${action}`, forwardedParams);
       } catch (err) {
         clearTimeout(timeout);
         this.pendingCommands.delete(id);
