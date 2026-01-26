@@ -1,5 +1,53 @@
 # SEI-MCP Development Log
 
+## 2026-01-26 — Deploy Render Corrigido + 84 Ferramentas
+
+### Resumo
+Deploy do sei-mcp no Render corrigido após dois erros: build falhava porque `tsup` não estava disponível em produção, e o CMD do Dockerfile estava errado.
+
+### Problemas e Soluções
+
+| Problema | Causa | Solução |
+|----------|-------|---------|
+| `tsup: not found` | devDependencies não instaladas em production | Copiar `dist/` pré-buildado ao invés de buildar no container |
+| `Application exited early` | CMD usava `http-server.js` que só exporta função | Usar `index.js http` que executa o servidor |
+
+### Arquivos Modificados
+
+| Arquivo | Mudanças |
+|---------|----------|
+| `.gitignore` | Removido `dist/` para incluir no repo |
+| `Dockerfile` | Removido build step, copia `dist/` pré-buildado, CMD correto |
+
+### Dockerfile Final
+
+```dockerfile
+FROM mcr.microsoft.com/playwright:v1.58.0-jammy
+WORKDIR /app
+ENV NODE_ENV=production
+RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+COPY package.json pnpm-lock.yaml ./
+COPY vendor ./vendor
+RUN pnpm install --frozen-lockfile --prod
+COPY dist ./dist
+EXPOSE 10000
+CMD ["node", "dist/index.js", "http"]
+```
+
+### Status do Deploy
+
+- **URL**: https://sei-mcp-d1w0.onrender.com
+- **Health**: `/health` → `{"status":"ok","tools":84}`
+- **Driver**: playwright
+- **Ferramentas**: 84 (63 SEI + 21 browser)
+
+### Commits
+
+1. `8846c42` - fix: copy pre-built dist for Render deployment
+2. `db0ecb0` - fix: use correct CMD to start HTTP server
+
+---
+
 ## 2026-01-26 — Mapeamento Completo de Ícones do SEI via Playwright
 
 ### Resumo
