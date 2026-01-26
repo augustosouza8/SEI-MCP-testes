@@ -7,7 +7,8 @@ import { spawn } from 'child_process';
 import type { SeiPlaywrightManager } from '../playwright/manager.js';
 
 // Smart Wait configuration
-const SMART_WAIT_ENABLED = process.env.SEI_MCP_SMART_WAIT !== 'false';
+// DISABLED BY DEFAULT - enable only if extension supports sei_wait_for_stable
+const SMART_WAIT_ENABLED = process.env.SEI_MCP_SMART_WAIT === 'true';
 const SMART_WAIT_STABILITY_MS = parseInt(process.env.SEI_MCP_STABILITY_MS || '300', 10);
 const SMART_WAIT_MAX_MS = parseInt(process.env.SEI_MCP_MAX_WAIT_MS || '5000', 10);
 
@@ -26,6 +27,7 @@ const SMART_WAIT_TOOLS = [
 
 /**
  * Check if tool should use smart wait
+ * Disabled by default until extension supports sei_wait_for_stable
  */
 function shouldUseSmartWait(toolName: string): boolean {
   return SMART_WAIT_ENABLED && SMART_WAIT_TOOLS.includes(toolName);
