@@ -1,3 +1,5 @@
+import "./chunk-QGM4M3NI.js";
+
 // src/soap/client.ts
 import * as soap from "soap";
 var SEISoapClient = class {
@@ -485,9 +487,318 @@ var SEI_SELECTORS = {
 };
 
 // src/browser/client.ts
+import * as fs2 from "fs";
+import * as path2 from "path";
+import * as os2 from "os";
+
+// src/core/resilience.ts
+var RESILIENCE_DEFAULTS = {
+  failFastTimeout: 3e3,
+  maxRetries: 2,
+  retryBackoff: 500,
+  speculative: false
+};
+function resolveResilienceConfig(config) {
+  return { ...RESILIENCE_DEFAULTS, ...config };
+}
+function classifyError(error) {
+  const msg = error instanceof Error ? error.message : String(error);
+  const lower = msg.toLowerCase();
+  if (lower.includes("timeout") || lower.includes("etimedout") || lower.includes("econnreset") || lower.includes("econnrefused") || lower.includes("epipe") || lower.includes("navigation") || lower.includes("net::err_")) {
+    return "transient";
+  }
+  if (lower.includes("not found") || lower.includes("n\xE3o encontrado") || lower.includes("waiting for selector") || lower.includes("waiting for locator") || lower.includes("strict mode violation")) {
+    return "selector_not_found";
+  }
+  return "permanent";
+}
+async function failFast(fn, timeout) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`Fail-fast: timeout de ${timeout}ms excedido`));
+    }, timeout);
+    fn().then((result) => {
+      clearTimeout(timer);
+      resolve(result);
+    }).catch((err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+async function withRetry(fn, opts) {
+  const retryOn = opts.retryOn ?? ["transient"];
+  let lastError;
+  for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt === opts.maxRetries) break;
+      const kind = classifyError(error);
+      if (!retryOn.includes(kind)) break;
+      const delay = opts.backoff * Math.pow(2, attempt);
+      const jitter = delay * (0.8 + Math.random() * 0.4);
+      await new Promise((resolve) => setTimeout(resolve, jitter));
+    }
+  }
+  throw lastError;
+}
+
+// src/core/selector-store.ts
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+var DEFAULT_DIR = path.join(os.homedir(), ".sei-playwright");
+var DEFAULT_FILE = "selector-cache.json";
+var DEFAULT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1e3;
+var SelectorStore = class {
+  filePath;
+  cache = /* @__PURE__ */ new Map();
+  dirty = false;
+  constructor(storePath) {
+    this.filePath = storePath ?? path.join(DEFAULT_DIR, DEFAULT_FILE);
+    this.load();
+  }
+  get(key) {
+    const entry = this.cache.get(key);
+    return entry?.discoveredSelector ?? null;
+  }
+  set(key, selector) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const existing = this.cache.get(key);
+    this.cache.set(key, {
+      discoveredSelector: selector,
+      discoveredAt: existing?.discoveredAt ?? now,
+      successCount: existing?.successCount ?? 0,
+      lastSuccess: now
+    });
+    this.dirty = true;
+    this.save();
+  }
+  recordSuccess(key) {
+    const entry = this.cache.get(key);
+    if (!entry) return;
+    entry.successCount++;
+    entry.lastSuccess = (/* @__PURE__ */ new Date()).toISOString();
+    this.dirty = true;
+    this.debounceSave();
+  }
+  prune(maxAge = DEFAULT_MAX_AGE_MS) {
+    const cutoff = Date.now() - maxAge;
+    let removed = 0;
+    for (const [key, entry] of this.cache) {
+      const lastUsed = new Date(entry.lastSuccess).getTime();
+      if (lastUsed < cutoff) {
+        this.cache.delete(key);
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      this.dirty = true;
+      this.save();
+    }
+    return removed;
+  }
+  get size() {
+    return this.cache.size;
+  }
+  load() {
+    try {
+      if (fs.existsSync(this.filePath)) {
+        const raw = fs.readFileSync(this.filePath, "utf-8");
+        const data = JSON.parse(raw);
+        for (const [key, entry] of Object.entries(data)) {
+          this.cache.set(key, entry);
+        }
+      }
+    } catch {
+    }
+  }
+  save() {
+    if (!this.dirty) return;
+    try {
+      const dir = path.dirname(this.filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const data = {};
+      for (const [key, entry] of this.cache) {
+        data[key] = entry;
+      }
+      fs.writeFileSync(this.filePath, JSON.stringify(data, null, 2), "utf-8");
+      this.dirty = false;
+    } catch {
+    }
+  }
+  saveTimer = null;
+  debounceSave() {
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      this.save();
+    }, 5e3);
+  }
+};
+
+// src/core/agent-fallback.ts
+var DEFAULT_MODEL = "claude-sonnet-4-20250514";
+var DEFAULT_MAX_TOKENS = 1024;
+function createAgentFallback(config) {
+  if (!config.enabled) return null;
+  const apiKey = config.apiKey ?? process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    console.warn("[AGENT-FALLBACK] Nenhuma API key encontrada. Desativando agent fallback.");
+    return null;
+  }
+  let anthropicClient = null;
+  async function getClient() {
+    if (anthropicClient) return anthropicClient;
+    try {
+      const { default: Anthropic } = await import("./sdk-64FSB2WI.js");
+      anthropicClient = new Anthropic({ apiKey });
+      return anthropicClient;
+    } catch {
+      console.warn("[AGENT-FALLBACK] @anthropic-ai/sdk n\xE3o instalado. Desativando agent fallback.");
+      return null;
+    }
+  }
+  return {
+    async askForSelector(page, description, context, original) {
+      const client = await getClient();
+      if (!client) return null;
+      try {
+        const screenshotBuffer = await page.screenshot({
+          fullPage: false,
+          type: "jpeg",
+          quality: 60
+        });
+        const screenshotBase64 = screenshotBuffer.toString("base64");
+        const domSnapshot = await extractInteractiveDOM(page);
+        const nameStr = original.name instanceof RegExp ? original.name.source : original.name;
+        const prompt = `Voc\xEA \xE9 um assistente especializado em automa\xE7\xE3o do sistema SEI (Sistema Eletr\xF4nico de Informa\xE7\xF5es) do governo brasileiro.
+
+TAREFA: Encontre o elemento descrito abaixo na p\xE1gina e retorne APENAS um seletor CSS v\xE1lido.
+
+ELEMENTO PROCURADO: ${description}
+CONTEXTO DA P\xC1GINA: ${context}
+SELETOR ORIGINAL (que falhou):
+- role: ${original.role}
+- name: ${nameStr}
+- fallback CSS: ${original.cssFallback ?? "N/A"}
+
+ELEMENTOS INTERATIVOS NA P\xC1GINA:
+${domSnapshot}
+
+REGRAS:
+1. Retorne APENAS o seletor CSS, sem explica\xE7\xE3o
+2. O seletor deve ser espec\xEDfico o suficiente para ser \xFAnico
+3. Prefira seletores por ID > atributos > classe > hierarquia
+4. O seletor deve funcionar com document.querySelector()
+5. Formate a resposta assim: SELECTOR: <seu-seletor-aqui>
+
+Analise o screenshot e o DOM para encontrar o elemento correto.`;
+        const response = await client.messages.create({
+          model: config.model ?? DEFAULT_MODEL,
+          max_tokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "image",
+                  source: {
+                    type: "base64",
+                    media_type: "image/jpeg",
+                    data: screenshotBase64
+                  }
+                },
+                {
+                  type: "text",
+                  text: prompt
+                }
+              ]
+            }
+          ]
+        });
+        const text = response.content.filter((c) => c.type === "text").map((c) => c.text).join("");
+        const selector = extractSelectorFromResponse(text);
+        if (!selector) return null;
+        const valid = await validateSelector(page, selector);
+        if (!valid) return null;
+        return selector;
+      } catch (error) {
+        console.warn("[AGENT-FALLBACK] Erro ao consultar agent:", error);
+        return null;
+      }
+    }
+  };
+}
+async function extractInteractiveDOM(page) {
+  return await page.evaluate(() => {
+    const doc = globalThis.document;
+    const interactiveTags = ["INPUT", "BUTTON", "SELECT", "TEXTAREA", "A", "LABEL"];
+    const elements = [];
+    function describeElement(el) {
+      const tag = el.tagName.toLowerCase();
+      const attrs = [];
+      for (const attr of ["id", "name", "class", "type", "role", "aria-label", "placeholder", "href", "value"]) {
+        const val = el.getAttribute(attr);
+        if (val) attrs.push(`${attr}="${val.substring(0, 80)}"`);
+      }
+      const text = (el.textContent ?? "").trim().substring(0, 60);
+      const textPart = text ? ` text="${text}"` : "";
+      return `<${tag} ${attrs.join(" ")}${textPart}/>`;
+    }
+    for (const tag of interactiveTags) {
+      const nodeList = doc.querySelectorAll(tag);
+      for (let i = 0; i < nodeList.length; i++) {
+        const el = nodeList[i];
+        if (el.offsetParent !== null) {
+          elements.push(describeElement(el));
+        }
+      }
+    }
+    const roleNodes = doc.querySelectorAll("[role]");
+    for (let i = 0; i < roleNodes.length; i++) {
+      const el = roleNodes[i];
+      if (el.offsetParent !== null) {
+        const desc = describeElement(el);
+        if (!elements.includes(desc)) {
+          elements.push(desc);
+        }
+      }
+    }
+    return elements.join("\n").substring(0, 5e3);
+  });
+}
+function extractSelectorFromResponse(text) {
+  const match = text.match(/SELECTOR:\s*(.+)/i);
+  if (match) {
+    return match[1].trim().replace(/^["'`]+|["'`]+$/g, "");
+  }
+  const codeMatch = text.match(/```(?:css)?\s*\n?(.+?)\n?```/s);
+  if (codeMatch) {
+    return codeMatch[1].trim();
+  }
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    if (/^[#.\[\w]/.test(line) && !line.includes(" ") || line.includes("[") || line.startsWith("#")) {
+      return line;
+    }
+  }
+  return null;
+}
+async function validateSelector(page, selector) {
+  try {
+    const el = await page.$(selector);
+    return el !== null;
+  } catch {
+    return false;
+  }
+}
+
+// src/browser/client.ts
 var SEIBrowserClient = class {
   config;
   browser = null;
@@ -495,8 +806,17 @@ var SEIBrowserClient = class {
   page = null;
   /** Endpoint CDP para reconexão */
   cdpEndpoint = null;
+  /** Resiliência */
+  resilience;
+  selectorStore;
+  agentFallback = null;
   constructor(config) {
     this.config = config;
+    this.resilience = resolveResilienceConfig(config.resilience);
+    this.selectorStore = new SelectorStore();
+    if (config.agentFallback) {
+      this.agentFallback = createAgentFallback(config.agentFallback);
+    }
   }
   /** URL base do SEI */
   get baseUrl() {
@@ -508,7 +828,7 @@ var SEIBrowserClient = class {
   }
   /** Diretório padrão para persistent context */
   get defaultUserDataDir() {
-    return path.join(os.homedir(), ".sei-playwright", "chrome-profile");
+    return path2.join(os2.homedir(), ".sei-playwright", "chrome-profile");
   }
   /** Inicializa o navegador */
   async init() {
@@ -530,8 +850,8 @@ var SEIBrowserClient = class {
     }
     if (options.persistent || options.userDataDir) {
       const userDataDir = options.userDataDir ?? this.defaultUserDataDir;
-      if (!fs.existsSync(userDataDir)) {
-        fs.mkdirSync(userDataDir, { recursive: true });
+      if (!fs2.existsSync(userDataDir)) {
+        fs2.mkdirSync(userDataDir, { recursive: true });
       }
       const args2 = [];
       if (options.cdpPort) {
@@ -723,9 +1043,9 @@ var SEIBrowserClient = class {
     }
   }
   /** Navega para URL */
-  async navigate(path2) {
+  async navigate(path3) {
     const page = this.getPage();
-    const url = path2.startsWith("http") ? path2 : `${this.baseUrl}${path2}`;
+    const url = path3.startsWith("http") ? path3 : `${this.baseUrl}${path3}`;
     await page.goto(url);
     await this.waitForLoad();
   }
@@ -772,143 +1092,334 @@ var SEIBrowserClient = class {
     return page.frameLocator('iframe[name="ifrArvoreHtml"], #ifrArvoreHtml');
   }
   // ============================================
-  // Smart Helpers (ARIA primeiro, CSS fallback)
+  // Smart Helpers (ARIA primeiro, CSS fallback, Self-Healing)
   // ============================================
-  /** Clica em elemento: tenta ARIA primeiro, fallback CSS */
+  /**
+   * Gera chave para o selector store.
+   */
+  getSelectorKey(role, name, context) {
+    const nameStr = name instanceof RegExp ? name.source : name ?? "unknown";
+    return `sei|${context ?? "default"}|${role}:${nameStr}`;
+  }
+  /**
+   * Tenta executar ação via CSS selector no target (Page ou FrameLocator).
+   */
+  async executeCssAction(target, cssSelector, action) {
+    const locator = "locator" in target ? target.locator(cssSelector) : target.locator(cssSelector);
+    return await action(locator.first());
+  }
+  /**
+   * Tenta agent fallback para descobrir seletor.
+   * Só funciona com target = Page (não FrameLocator).
+   */
+  async tryAgentFallback(target, aria, cssFallback) {
+    if (!this.agentFallback) return null;
+    if (!("screenshot" in target)) return null;
+    const page = target;
+    const nameStr = aria.name instanceof RegExp ? aria.name.source : aria.name ?? "";
+    const description = `${aria.role} com texto "${nameStr}"`;
+    const original = {
+      role: aria.role,
+      name: aria.name ?? "",
+      cssFallback
+    };
+    return await this.agentFallback.askForSelector(page, description, "sei", original);
+  }
+  /** Clica em elemento: ARIA → CSS → Store → Agent */
   async clickSmart(target, aria, cssFallback) {
+    const t = this.resilience.failFastTimeout;
+    const storeKey = this.getSelectorKey(aria.role, aria.name);
     try {
-      await target.getByRole(aria.role, { name: aria.name }).first().click();
+      await failFast(
+        () => target.getByRole(aria.role, { name: aria.name }).first().click(),
+        t
+      );
+      this.selectorStore.recordSuccess(storeKey);
+      return;
     } catch {
-      if (cssFallback) {
-        if ("click" in target) {
-          await target.click(cssFallback);
-        } else {
-          await target.locator(cssFallback).first().click();
-        }
-      } else {
-        throw new Error(`Elemento n\xE3o encontrado: ${aria.role} "${aria.name}"`);
+    }
+    if (cssFallback) {
+      try {
+        await failFast(
+          () => this.executeCssAction(target, cssFallback, (loc) => loc.click()),
+          t
+        );
+        return;
+      } catch {
       }
     }
+    const cached = this.selectorStore.get(storeKey);
+    if (cached) {
+      try {
+        await failFast(
+          () => this.executeCssAction(target, cached, (loc) => loc.click()),
+          t
+        );
+        this.selectorStore.recordSuccess(storeKey);
+        console.log(`[SELF-HEALING] Usando seletor do cache: ${cached}`);
+        return;
+      } catch {
+      }
+    }
+    const discovered = await this.tryAgentFallback(target, aria, cssFallback);
+    if (discovered) {
+      try {
+        await this.executeCssAction(target, discovered, (loc) => loc.click());
+        this.selectorStore.set(storeKey, discovered);
+        console.log(`[SELF-HEALING] Novo seletor descoberto: ${discovered}`);
+        return;
+      } catch {
+      }
+    }
+    throw new Error(`Elemento n\xE3o encontrado: ${aria.role} "${aria.name}"`);
   }
-  /** Preenche campo: tenta ARIA primeiro, fallback CSS */
+  /** Preenche campo: ARIA → CSS → Store → Agent */
   async fillSmart(target, aria, value, cssFallback) {
+    const t = this.resilience.failFastTimeout;
+    const storeKey = this.getSelectorKey(aria.role ?? "textbox", aria.name);
     try {
-      let locator;
-      if (aria.role && aria.name) {
-        locator = target.getByRole(aria.role, { name: aria.name });
-      } else if (aria.role) {
-        locator = target.getByRole(aria.role);
-      } else {
-        throw new Error("role \xE9 obrigat\xF3rio");
-      }
-      if (aria.nth !== void 0) {
-        locator = locator.nth(aria.nth);
-      } else {
-        locator = locator.first();
-      }
-      await locator.fill(value);
-    } catch {
-      if (cssFallback) {
-        if ("fill" in target) {
-          await target.fill(cssFallback, value);
+      await failFast(async () => {
+        let locator;
+        if (aria.role && aria.name) {
+          locator = target.getByRole(aria.role, { name: aria.name });
+        } else if (aria.role) {
+          locator = target.getByRole(aria.role);
         } else {
-          await target.locator(cssFallback).first().fill(value);
+          throw new Error("role \xE9 obrigat\xF3rio");
         }
-      } else {
-        throw new Error(`Campo n\xE3o encontrado: ${aria.role} "${aria.name}"`);
+        if (aria.nth !== void 0) {
+          locator = locator.nth(aria.nth);
+        } else {
+          locator = locator.first();
+        }
+        await locator.fill(value);
+      }, t);
+      this.selectorStore.recordSuccess(storeKey);
+      return;
+    } catch {
+    }
+    if (cssFallback) {
+      try {
+        await failFast(
+          () => this.executeCssAction(target, cssFallback, (loc) => loc.fill(value)),
+          t
+        );
+        return;
+      } catch {
       }
     }
+    const cached = this.selectorStore.get(storeKey);
+    if (cached) {
+      try {
+        await failFast(
+          () => this.executeCssAction(target, cached, (loc) => loc.fill(value)),
+          t
+        );
+        this.selectorStore.recordSuccess(storeKey);
+        return;
+      } catch {
+      }
+    }
+    const discovered = await this.tryAgentFallback(target, { role: aria.role ?? "textbox", name: aria.name }, cssFallback);
+    if (discovered) {
+      try {
+        await this.executeCssAction(target, discovered, (loc) => loc.fill(value));
+        this.selectorStore.set(storeKey, discovered);
+        console.log(`[SELF-HEALING] Novo seletor descoberto: ${discovered}`);
+        return;
+      } catch {
+      }
+    }
+    throw new Error(`Campo n\xE3o encontrado: ${aria.role} "${aria.name}"`);
   }
-  /** Seleciona opção: tenta ARIA primeiro, fallback CSS */
+  /** Seleciona opção: ARIA → CSS → Store → Agent */
   async selectSmart(target, aria, value, cssFallback) {
+    const t = this.resilience.failFastTimeout;
+    const storeKey = this.getSelectorKey(aria.role ?? "combobox", aria.name);
     try {
-      let locator;
-      if (aria.role && aria.name) {
-        locator = target.getByRole(aria.role, { name: aria.name });
-      } else if (aria.role) {
-        locator = target.getByRole(aria.role);
-      } else {
-        throw new Error("role \xE9 obrigat\xF3rio");
-      }
-      if (aria.nth !== void 0) {
-        locator = locator.nth(aria.nth);
-      } else {
-        locator = locator.first();
-      }
-      await locator.selectOption(value);
-    } catch {
-      if (cssFallback) {
-        if ("selectOption" in target) {
-          await target.selectOption(cssFallback, value);
+      await failFast(async () => {
+        let locator;
+        if (aria.role && aria.name) {
+          locator = target.getByRole(aria.role, { name: aria.name });
+        } else if (aria.role) {
+          locator = target.getByRole(aria.role);
         } else {
-          await target.locator(cssFallback).first().selectOption(value);
+          throw new Error("role \xE9 obrigat\xF3rio");
         }
-      } else {
-        throw new Error(`Select n\xE3o encontrado: ${aria.role} "${aria.name}"`);
+        if (aria.nth !== void 0) {
+          locator = locator.nth(aria.nth);
+        } else {
+          locator = locator.first();
+        }
+        await locator.selectOption(value);
+      }, t);
+      this.selectorStore.recordSuccess(storeKey);
+      return;
+    } catch {
+    }
+    if (cssFallback) {
+      try {
+        await failFast(
+          () => this.executeCssAction(target, cssFallback, (loc) => loc.selectOption(value)),
+          t
+        );
+        return;
+      } catch {
       }
     }
+    const cached = this.selectorStore.get(storeKey);
+    if (cached) {
+      try {
+        await failFast(
+          () => this.executeCssAction(target, cached, (loc) => loc.selectOption(value)),
+          t
+        );
+        this.selectorStore.recordSuccess(storeKey);
+        return;
+      } catch {
+      }
+    }
+    const discovered = await this.tryAgentFallback(target, { role: aria.role ?? "combobox", name: aria.name }, cssFallback);
+    if (discovered) {
+      try {
+        await this.executeCssAction(target, discovered, (loc) => loc.selectOption(value));
+        this.selectorStore.set(storeKey, discovered);
+        return;
+      } catch {
+      }
+    }
+    throw new Error(`Select n\xE3o encontrado: ${aria.role} "${aria.name}"`);
   }
-  /** Marca checkbox/radio: tenta ARIA primeiro, fallback CSS */
+  /** Marca checkbox/radio: ARIA → CSS → Store → Agent */
   async checkSmart(target, aria, cssFallback) {
+    const t = this.resilience.failFastTimeout;
+    const storeKey = this.getSelectorKey(aria.role, aria.name);
     try {
-      await target.getByRole(aria.role, { name: aria.name }).first().check();
+      await failFast(
+        () => target.getByRole(aria.role, { name: aria.name }).first().check(),
+        t
+      );
+      this.selectorStore.recordSuccess(storeKey);
+      return;
     } catch {
-      if (cssFallback) {
-        if ("check" in target) {
-          await target.check(cssFallback);
-        } else {
-          await target.locator(cssFallback).first().check();
-        }
-      } else {
-        throw new Error(`${aria.role} n\xE3o encontrado: "${aria.name}"`);
+    }
+    if (cssFallback) {
+      try {
+        await failFast(
+          () => this.executeCssAction(target, cssFallback, (loc) => loc.check()),
+          t
+        );
+        return;
+      } catch {
       }
     }
+    const cached = this.selectorStore.get(storeKey);
+    if (cached) {
+      try {
+        await failFast(
+          () => this.executeCssAction(target, cached, (loc) => loc.check()),
+          t
+        );
+        this.selectorStore.recordSuccess(storeKey);
+        return;
+      } catch {
+      }
+    }
+    const discovered = await this.tryAgentFallback(target, aria, cssFallback);
+    if (discovered) {
+      try {
+        await this.executeCssAction(target, discovered, (loc) => loc.check());
+        this.selectorStore.set(storeKey, discovered);
+        return;
+      } catch {
+      }
+    }
+    throw new Error(`${aria.role} n\xE3o encontrado: "${aria.name}"`);
   }
-  /** Aguarda elemento: tenta ARIA primeiro, fallback CSS */
+  /** Aguarda elemento: ARIA → CSS → Store */
   async waitForSmart(target, aria, cssFallback, options) {
+    const t = options?.timeout ?? this.resilience.failFastTimeout;
+    const state = options?.state ?? "visible";
+    const storeKey = this.getSelectorKey(aria.role, aria.name);
     try {
       const locator = aria.name ? target.getByRole(aria.role, { name: aria.name }) : target.getByRole(aria.role);
-      await locator.first().waitFor({ timeout: options?.timeout ?? 5e3, state: options?.state ?? "visible" });
+      await failFast(() => locator.first().waitFor({ timeout: t, state }), t + 500);
+      this.selectorStore.recordSuccess(storeKey);
+      return;
     } catch {
-      if (cssFallback) {
-        const locator = "locator" in target ? target.locator(cssFallback) : target.locator(cssFallback);
-        await locator.first().waitFor({ timeout: options?.timeout ?? 5e3, state: options?.state ?? "visible" });
-      } else {
-        throw new Error(`Elemento n\xE3o encontrado: ${aria.role} "${aria.name}"`);
-      }
     }
+    if (cssFallback) {
+      const locator = "locator" in target ? target.locator(cssFallback) : target.locator(cssFallback);
+      await locator.first().waitFor({ timeout: t, state });
+      return;
+    }
+    const cached = this.selectorStore.get(storeKey);
+    if (cached) {
+      const locator = "locator" in target ? target.locator(cached) : target.locator(cached);
+      await locator.first().waitFor({ timeout: t, state });
+      this.selectorStore.recordSuccess(storeKey);
+      return;
+    }
+    throw new Error(`Elemento n\xE3o encontrado: ${aria.role} "${aria.name}"`);
   }
-  /** Obtém texto de elemento: tenta ARIA primeiro, fallback CSS */
+  /** Obtém texto de elemento: ARIA → CSS → Store */
   async getTextSmart(target, aria, cssFallback) {
+    const storeKey = this.getSelectorKey(aria.role, aria.name);
     try {
       const locator = aria.name ? target.getByRole(aria.role, { name: aria.name }) : target.getByRole(aria.role);
-      return await locator.first().textContent();
+      const text = await locator.first().textContent();
+      this.selectorStore.recordSuccess(storeKey);
+      return text;
     } catch {
-      if (cssFallback) {
+    }
+    if (cssFallback) {
+      try {
         const locator = "locator" in target ? target.locator(cssFallback) : target.locator(cssFallback);
         return await locator.first().textContent();
+      } catch {
       }
-      return null;
     }
+    const cached = this.selectorStore.get(storeKey);
+    if (cached) {
+      try {
+        const locator = "locator" in target ? target.locator(cached) : target.locator(cached);
+        const text = await locator.first().textContent();
+        this.selectorStore.recordSuccess(storeKey);
+        return text;
+      } catch {
+      }
+    }
+    return null;
   }
-  /** Verifica se elemento existe: tenta ARIA primeiro, fallback CSS */
+  /** Verifica se elemento existe: ARIA → CSS → Store */
   async existsSmart(target, aria, cssFallback, timeout = 2e3) {
+    const storeKey = this.getSelectorKey(aria.role, aria.name);
     try {
       const locator = aria.name ? target.getByRole(aria.role, { name: aria.name }) : target.getByRole(aria.role);
       await locator.first().waitFor({ timeout, state: "visible" });
+      this.selectorStore.recordSuccess(storeKey);
       return true;
     } catch {
-      if (cssFallback) {
-        try {
-          const locator = "locator" in target ? target.locator(cssFallback) : target.locator(cssFallback);
-          await locator.first().waitFor({ timeout, state: "visible" });
-          return true;
-        } catch {
-          return false;
-        }
-      }
-      return false;
     }
+    if (cssFallback) {
+      try {
+        const locator = "locator" in target ? target.locator(cssFallback) : target.locator(cssFallback);
+        await locator.first().waitFor({ timeout, state: "visible" });
+        return true;
+      } catch {
+      }
+    }
+    const cached = this.selectorStore.get(storeKey);
+    if (cached) {
+      try {
+        const locator = "locator" in target ? target.locator(cached) : target.locator(cached);
+        await locator.first().waitFor({ timeout, state: "visible" });
+        this.selectorStore.recordSuccess(storeKey);
+        return true;
+      } catch {
+      }
+    }
+    return false;
   }
   // ============================================
   // Autenticacao
@@ -1177,8 +1688,8 @@ var SEIBrowserClient = class {
     await this.clickSmart(page, { role: "link", name: /gerar.*pdf|download.*pdf/i }, SEI_SELECTORS.processActions.gerarPdf);
     try {
       const download = await downloadPromise;
-      const path2 = await download.path();
-      return path2;
+      const path3 = await download.path();
+      return path3;
     } catch {
       return null;
     }
@@ -1312,8 +1823,8 @@ var SEIBrowserClient = class {
     }
     const buffer = Buffer.from(conteudoBase64, "base64");
     const tempPath = `/tmp/${nomeArquivo}`;
-    const fs2 = await import("fs/promises");
-    await fs2.writeFile(tempPath, buffer);
+    const fs3 = await import("fs/promises");
+    await fs3.writeFile(tempPath, buffer);
     const fileInput = page.locator('input[type="file"]').first();
     await fileInput.setInputFiles(tempPath);
     if (options.descricao) {
@@ -1329,7 +1840,7 @@ var SEIBrowserClient = class {
     }
     await this.clickSmart(page, { role: "button", name: /salvar|confirmar/i }, SEI_SELECTORS.upload.salvar);
     await this.waitForLoad();
-    await fs2.unlink(tempPath).catch(() => {
+    await fs3.unlink(tempPath).catch(() => {
     });
     const url = page.url();
     const idMatch = url.match(/id_documento=(\d+)/);
@@ -1944,8 +2455,8 @@ var SEIBrowserClient = class {
     const download = await downloadPromise;
     const suggestedPath = outputPath || `/tmp/${download.suggestedFilename()}`;
     await download.saveAs(suggestedPath);
-    const fs2 = await import("fs/promises");
-    const stats = await fs2.stat(suggestedPath);
+    const fs3 = await import("fs/promises");
+    const stats = await fs3.stat(suggestedPath);
     return { filePath: suggestedPath, size: stats.size };
   }
   /** Faz download de documento especifico */
@@ -1957,8 +2468,8 @@ var SEIBrowserClient = class {
     const download = await downloadPromise;
     const suggestedPath = outputPath || `/tmp/${download.suggestedFilename()}`;
     await download.saveAs(suggestedPath);
-    const fs2 = await import("fs/promises");
-    const stats = await fs2.stat(suggestedPath);
+    const fs3 = await import("fs/promises");
+    const stats = await fs3.stat(suggestedPath);
     return { filePath: suggestedPath, size: stats.size };
   }
   /** Lista anotacoes do processo */
@@ -3169,12 +3680,12 @@ var SEIWatcher = class extends EventEmitter {
 // src/service.ts
 import { EventEmitter as EventEmitter2 } from "events";
 import { mkdir as mkdir2 } from "fs/promises";
-import { join as join3 } from "path";
+import { join as join4 } from "path";
 
 // src/users.ts
 import { readFile, writeFile, mkdir } from "fs/promises";
-import { existsSync as existsSync2 } from "fs";
-import { join as join2 } from "path";
+import { existsSync as existsSync3 } from "fs";
+import { join as join3 } from "path";
 
 // src/crypto.ts
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "crypto";
@@ -3242,14 +3753,14 @@ var SEIUserManager = class {
   constructor(options) {
     this.storagePath = options.storagePath;
     this.masterPassword = options.masterPassword;
-    this.storeFile = join2(this.storagePath, "sei-users.encrypted.json");
+    this.storeFile = join3(this.storagePath, "sei-users.encrypted.json");
   }
   /** Inicializa o gerenciador */
   async init() {
-    if (!existsSync2(this.storagePath)) {
+    if (!existsSync3(this.storagePath)) {
       await mkdir(this.storagePath, { recursive: true });
     }
-    if (existsSync2(this.storeFile)) {
+    if (existsSync3(this.storeFile)) {
       const data = await readFile(this.storeFile, "utf-8");
       this.store = JSON.parse(data);
     } else {
@@ -3645,7 +4156,7 @@ var SEIService = class extends EventEmitter2 {
   /** Inicializa o serviço */
   async init() {
     await this.userManager.init();
-    await mkdir2(join3(this.config.dataPath, "downloads"), { recursive: true });
+    await mkdir2(join4(this.config.dataPath, "downloads"), { recursive: true });
   }
   // ============================================
   // Gestão de Usuários
@@ -3914,7 +4425,7 @@ var SEIService = class extends EventEmitter2 {
   }
   /** Baixa documentos */
   async downloadDocuments(session, user, docs) {
-    const downloadPath = join3(this.config.dataPath, "downloads", user.id);
+    const downloadPath = join4(this.config.dataPath, "downloads", user.id);
     await mkdir2(downloadPath, { recursive: true });
     for (const doc of docs) {
       try {
@@ -3925,7 +4436,7 @@ var SEIService = class extends EventEmitter2 {
         const downloadPromise = page.waitForEvent("download", { timeout: 1e4 });
         await downloadLink.click();
         const download = await downloadPromise;
-        const filePath = join3(downloadPath, doc.nome);
+        const filePath = join4(downloadPath, doc.nome);
         await download.saveAs(filePath);
         doc.filePath = filePath;
       } catch {
@@ -3938,7 +4449,7 @@ var SEIService = class extends EventEmitter2 {
     try {
       const browserClient = session.client.getBrowserClient();
       if (!browserClient) return void 0;
-      const downloadPath = join3(this.config.dataPath, "downloads", user.id);
+      const downloadPath = join4(this.config.dataPath, "downloads", user.id);
       await mkdir2(downloadPath, { recursive: true });
       const page = browserClient.getPage();
       const pdfBtn = await page.$('a[href*="gerar_pdf"], a[href*="procedimento_gerar_pdf"]');
@@ -3951,7 +4462,7 @@ var SEIService = class extends EventEmitter2 {
         await confirmBtn.click();
       }
       const download = await downloadPromise;
-      const filePath = join3(downloadPath, `Processo_${item.numero?.replace(/[^0-9]/g, "") ?? item.id}.pdf`);
+      const filePath = join4(downloadPath, `Processo_${item.numero?.replace(/[^0-9]/g, "") ?? item.id}.pdf`);
       await download.saveAs(filePath);
       return filePath;
     } catch {
@@ -4376,41 +4887,41 @@ var SEIServiceAPI = class {
   }
   /** Roteamento de requisições */
   async handleRequest(req, sessionId) {
-    const { method, path: path2, pathParts, body } = req;
-    if (path2 === "/status" && method === "GET") {
+    const { method, path: path3, pathParts, body } = req;
+    if (path3 === "/status" && method === "GET") {
       return this.handleGetStatus();
     }
-    if (path2 === "/start" && method === "POST") {
+    if (path3 === "/start" && method === "POST") {
       return this.handleStartAll();
     }
-    if (path2 === "/stop" && method === "POST") {
+    if (path3 === "/stop" && method === "POST") {
       return this.handleStopAll();
     }
-    if (path2 === "/daemon/status" && method === "GET") {
+    if (path3 === "/daemon/status" && method === "GET") {
       return this.handleDaemonStatus();
     }
-    if (path2 === "/daemon/start" && method === "POST") {
+    if (path3 === "/daemon/start" && method === "POST") {
       return this.handleDaemonStart(body);
     }
-    if (path2 === "/daemon/stop" && method === "POST") {
+    if (path3 === "/daemon/stop" && method === "POST") {
       return this.handleDaemonStop();
     }
-    if (path2 === "/daemon/config" && method === "GET") {
+    if (path3 === "/daemon/config" && method === "GET") {
       return this.handleDaemonGetConfig();
     }
-    if (path2 === "/daemon/config" && method === "PUT") {
+    if (path3 === "/daemon/config" && method === "PUT") {
       return this.handleDaemonUpdateConfig(body);
     }
-    if (path2 === "/sessions" && method === "POST") {
+    if (path3 === "/sessions" && method === "POST") {
       return this.handleCreateSession(body);
     }
     if (pathParts[0] === "sessions" && pathParts[1] && method === "DELETE") {
       return this.handleDeleteSession(pathParts[1]);
     }
-    if (path2 === "/users" && method === "GET") {
+    if (path3 === "/users" && method === "GET") {
       return this.handleListUsers();
     }
-    if (path2 === "/users" && method === "POST") {
+    if (path3 === "/users" && method === "POST") {
       return this.handleAddUser(body);
     }
     if (pathParts[0] === "users" && pathParts[1]) {
@@ -4430,88 +4941,88 @@ var SEIServiceAPI = class {
         return this.handleStopUser(userId);
       }
     }
-    if (path2 === "/tipos-processo" && method === "GET") {
+    if (path3 === "/tipos-processo" && method === "GET") {
       return this.handleWithSession(sessionId, (client) => this.handleListProcessTypes(client));
     }
-    if (path2 === "/tipos-documento" && method === "GET") {
+    if (path3 === "/tipos-documento" && method === "GET") {
       return this.handleWithSession(sessionId, (client) => this.handleListDocumentTypes(client));
     }
-    if (path2 === "/unidades" && method === "GET") {
+    if (path3 === "/unidades" && method === "GET") {
       return this.handleWithSession(sessionId, (client) => this.handleListUnits(client, req.query));
     }
-    if (path2 === "/usuarios" && method === "GET") {
+    if (path3 === "/usuarios" && method === "GET") {
       return this.handleWithSession(sessionId, (client) => this.handleListUsuarios(client, req.query));
     }
-    if (path2 === "/hipoteses-legais" && method === "GET") {
+    if (path3 === "/hipoteses-legais" && method === "GET") {
       return this.handleWithSession(sessionId, (client) => this.handleListHipotesesLegais(client));
     }
-    if (path2 === "/marcadores" && method === "GET") {
+    if (path3 === "/marcadores" && method === "GET") {
       return this.handleWithSession(sessionId, (client) => this.handleListMarcadores(client));
     }
-    if (path2 === "/meus-processos" && method === "GET") {
+    if (path3 === "/meus-processos" && method === "GET") {
       return this.handleWithSession(
         sessionId,
         (client) => this.handleListMeusProcessos(client, req.query)
       );
     }
-    if (path2 === "/screenshot" && method === "GET") {
+    if (path3 === "/screenshot" && method === "GET") {
       return this.handleWithSession(
         sessionId,
         (client) => this.handleScreenshot(client, req.query)
       );
     }
-    if (path2 === "/snapshot" && method === "GET") {
+    if (path3 === "/snapshot" && method === "GET") {
       return this.handleWithSession(
         sessionId,
         (client) => this.handleSnapshot(client, req.query)
       );
     }
-    if (path2 === "/current-page" && method === "GET") {
+    if (path3 === "/current-page" && method === "GET") {
       return this.handleWithSession(sessionId, (client) => this.handleGetCurrentPage(client));
     }
-    if (path2 === "/navigate" && method === "POST") {
+    if (path3 === "/navigate" && method === "POST") {
       return this.handleWithSession(
         sessionId,
         (client) => this.handleNavigate(client, body)
       );
     }
-    if (path2 === "/click" && method === "POST") {
+    if (path3 === "/click" && method === "POST") {
       return this.handleWithSession(
         sessionId,
         (client) => this.handleClick(client, body)
       );
     }
-    if (path2 === "/type" && method === "POST") {
+    if (path3 === "/type" && method === "POST") {
       return this.handleWithSession(
         sessionId,
         (client) => this.handleType(client, body)
       );
     }
-    if (path2 === "/select" && method === "POST") {
+    if (path3 === "/select" && method === "POST") {
       return this.handleWithSession(
         sessionId,
         (client) => this.handleSelect(client, body)
       );
     }
-    if (path2 === "/wait" && method === "POST") {
+    if (path3 === "/wait" && method === "POST") {
       return this.handleWithSession(
         sessionId,
         (client) => this.handleWait(client, body)
       );
     }
-    if (path2 === "/documents/sign-multiple" && method === "POST") {
+    if (path3 === "/documents/sign-multiple" && method === "POST") {
       return this.handleWithSession(
         sessionId,
         (client) => this.handleSignMultiple(client, body)
       );
     }
-    if (path2 === "/process/search" && method === "GET") {
+    if (path3 === "/process/search" && method === "GET") {
       return this.handleWithSession(
         sessionId,
         (client) => this.handleSearchProcess(client, req.query)
       );
     }
-    if (path2 === "/process" && method === "POST") {
+    if (path3 === "/process" && method === "POST") {
       return this.handleWithSession(
         sessionId,
         (client) => this.handleCreateProcess(client, body)
@@ -4707,10 +5218,10 @@ var SEIServiceAPI = class {
         );
       }
     }
-    if (path2 === "/blocos" && method === "GET") {
+    if (path3 === "/blocos" && method === "GET") {
       return this.handleWithSession(sessionId, (client) => this.handleListBlocos(client));
     }
-    if (path2 === "/blocos" && method === "POST") {
+    if (path3 === "/blocos" && method === "POST") {
       return this.handleWithSession(
         sessionId,
         (client) => this.handleCreateBloco(client, body)
@@ -4945,8 +5456,8 @@ var SEIServiceAPI = class {
     return { status: 201, data: result };
   }
   async handleGetProcess(client, processNumber) {
-    const process = await client.getProcess(processNumber);
-    return { status: 200, data: process };
+    const process2 = await client.getProcess(processNumber);
+    return { status: 200, data: process2 };
   }
   async handleForwardProcess(client, processNumber, body) {
     if (!body.unidadesDestino?.length) {
@@ -5255,7 +5766,7 @@ var SEIServiceAPI = class {
     return { status: 200, data: { success } };
   }
   async handleGetProcessStatus(client, processNumber, query) {
-    const process = await client.getProcess(processNumber);
+    const process2 = await client.getProcess(processNumber);
     const includeHistory = query.includeHistory !== "false";
     const includeDocuments = query.includeDocuments !== "false";
     let andamentos = [];
@@ -5266,7 +5777,7 @@ var SEIServiceAPI = class {
     if (includeDocuments) {
       documents = await client.listDocuments();
     }
-    return { status: 200, data: { ...process, andamentos, documents } };
+    return { status: 200, data: { ...process2, andamentos, documents } };
   }
   async handleDownloadProcess(client, processNumber, query) {
     const browserClient = client.getBrowserClient();
@@ -5619,9 +6130,15 @@ export {
   SEIUserManager,
   SEIWatcher,
   SEI_SELECTORS,
+  SelectorStore,
+  classifyError,
+  createAgentFallback,
   decrypt,
   decryptJson,
   client_default as default,
   encrypt,
-  generateSecurePassword
+  failFast,
+  generateSecurePassword,
+  resolveResilienceConfig,
+  withRetry
 };

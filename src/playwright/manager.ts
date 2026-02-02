@@ -10,9 +10,37 @@ import {
   type CreateProcessOptions,
   type ForwardOptions,
   type NivelAcesso,
+  type ResilienceConfig,
+  type AgentFallbackConfig,
 } from 'sei-playwright';
 
 import { logger } from '../utils/logger.js';
+
+// ============================================
+// Resilience config from environment
+// ============================================
+function getResilienceConfig(): ResilienceConfig | undefined {
+  const failFastMs = parseInt(process.env.RESILIENCE_FAIL_FAST_MS ?? '', 10);
+  if (isNaN(failFastMs) && !process.env.AGENT_FALLBACK_ENABLED) return undefined;
+  return {
+    failFastTimeout: isNaN(failFastMs) ? 3000 : failFastMs,
+    maxRetries: parseInt(process.env.RESILIENCE_MAX_RETRIES ?? '2', 10),
+    retryBackoff: parseInt(process.env.RESILIENCE_RETRY_BACKOFF_MS ?? '500', 10),
+    speculative: process.env.RESILIENCE_SPECULATIVE === 'true',
+  };
+}
+
+function getAgentFallbackConfig(): AgentFallbackConfig | undefined {
+  if (process.env.AGENT_FALLBACK_ENABLED !== 'true') return undefined;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return undefined;
+  return {
+    enabled: true,
+    apiKey,
+    model: process.env.AGENT_FALLBACK_MODEL ?? 'claude-sonnet-4-20250514',
+    maxTokens: parseInt(process.env.AGENT_FALLBACK_MAX_TOKENS ?? '1024', 10),
+  };
+}
 
 type PlaywrightSessionStatus = 'ready' | 'closed' | 'error';
 
@@ -25,6 +53,11 @@ export interface PlaywrightSessionInfo {
   cdpEndpoint?: string | null;
 }
 
+interface CacheEntry {
+  data: unknown;
+  expires: number;
+}
+
 interface SessionState {
   id: string;
   status: PlaywrightSessionStatus;
@@ -34,6 +67,8 @@ interface SessionState {
   lastActivity: Date;
   defaultTimeoutMs: number;
   queue: Promise<unknown>;
+  currentProcessNumber?: string;
+  processCache: Map<string, CacheEntry>;
 }
 
 function normalizeBaseUrl(url: string): string {
@@ -44,6 +79,59 @@ function nivelAcessoFromLabel(label: unknown): NivelAcesso {
   if (label === 'restrito') return 1;
   if (label === 'sigiloso') return 2;
   return 0;
+}
+
+function getCached<T>(session: SessionState, key: string): T | null {
+  const entry = session.processCache.get(key);
+  if (!entry || entry.expires < Date.now()) {
+    if (entry) session.processCache.delete(key);
+    return null;
+  }
+  return entry.data as T;
+}
+
+function setCache(session: SessionState, key: string, data: unknown, ttlMs = 60000): void {
+  session.processCache.set(key, { data, expires: Date.now() + ttlMs });
+}
+
+function invalidateProcessCache(session: SessionState, processNumber?: string): void {
+  if (!processNumber) {
+    session.processCache.clear();
+    return;
+  }
+  for (const key of session.processCache.keys()) {
+    if (key.includes(processNumber)) {
+      session.processCache.delete(key);
+    }
+  }
+}
+
+async function ensureProcessOpen(session: SessionState, processNumber: string): Promise<void> {
+  if (session.currentProcessNumber === processNumber) return;
+  await session.client.openProcess(processNumber);
+  session.currentProcessNumber = processNumber;
+}
+
+function cleanSnapshot(snap: string): string {
+  return snap
+    // Remover linhas de "Menu cópia protocolo" repetidas
+    .replace(/^\s*-\s*link\s+"Menu cópia protocolo".*$/gm, '')
+    // Resumir assinaturas longas multi-linha
+    .replace(/link "Assinado por: ([^\n]+?)(?:\\n|\n)[^"]*"/g, (_match, first: string) => {
+      return `link "Assinado: ${first.trim()}"`;
+    })
+    // Remover refs de img sem texto (decorativas)
+    .replace(/^\s*-\s*img\s+\[ref=\w+\](?:\s*\[cursor=pointer\])?\s*$/gm, '')
+    // Limpar linhas vazias consecutivas
+    .replace(/\n{3,}/g, '\n\n');
+}
+
+function truncateSnapshot(snap: string, maxLength: number): string {
+  if (snap.length <= maxLength) return snap;
+  const truncated = snap.slice(0, maxLength);
+  const lastNewline = truncated.lastIndexOf('\n');
+  return truncated.slice(0, lastNewline > 0 ? lastNewline : maxLength) +
+    `\n... [truncado em ${maxLength} chars, total: ${snap.length}]`;
 }
 
 function toPlaywrightSelector(selector: string): string {
@@ -192,6 +280,8 @@ export class SeiPlaywrightManager {
         channel: this.channelDefault,
         keepAlive: true,
       },
+      resilience: getResilienceConfig(),
+      agentFallback: getAgentFallbackConfig(),
     };
 
     const defaultTimeoutMs = cfg.playwright?.timeout ?? this.globalTimeoutMs;
@@ -207,6 +297,7 @@ export class SeiPlaywrightManager {
       lastActivity: now,
       defaultTimeoutMs,
       queue: Promise.resolve(),
+      processCache: new Map(),
     };
 
     this.sessions.set(id, state);
@@ -325,13 +416,53 @@ export class SeiPlaywrightManager {
             const type = (args.type as 'numero' | 'texto' | 'interessado' | 'assunto' | 'unidade') ?? 'numero';
             const limit = (args.limit as number | undefined) ?? 20;
             const mappedType = type === 'texto' ? 'texto' : type === 'interessado' ? 'interessado' : 'numero';
+
+            const searchCacheKey = `search:${query}:${mappedType}:${limit}`;
+            const cachedSearch = getCached<{ results: unknown[]; total: number }>(session, searchCacheKey);
+            if (cachedSearch) return cachedSearch;
+
             const results = await browserClient.searchProcessos(query, mappedType, limit);
-            return { results, total: results.length };
+            const searchResult = { results, total: results.length };
+            setCache(session, searchCacheKey, searchResult, 30000);
+            return searchResult;
+          }
+          case 'sei_search_and_open': {
+            if (!browserClient) throw new Error('Browser client não disponível');
+            const query = args.query as string;
+            const type = (args.type as 'numero' | 'texto' | 'interessado' | 'assunto') ?? 'numero';
+            const includeDocuments2 = (args.include_documents as boolean | undefined) ?? true;
+            const mappedType2 = type === 'texto' ? 'texto' : type === 'interessado' ? 'interessado' : 'numero';
+
+            // Buscar
+            const results = await browserClient.searchProcessos(query, mappedType2, 1);
+            if (!results || results.length === 0) {
+              return { found: false, query, message: 'Nenhum processo encontrado' };
+            }
+
+            const proc = results[0];
+            const procNum = proc.numero || proc.protocolo || query;
+
+            // Abrir
+            await ensureProcessOpen(session, procNum);
+
+            // Listar documentos
+            const docs = includeDocuments2 ? await session.client.listDocuments() : [];
+            if (includeDocuments2) {
+              setCache(session, `docs:${procNum}`, { process_number: procNum, documents: docs }, 60000);
+            }
+
+            return {
+              found: true,
+              process: proc,
+              process_number: procNum,
+              documents: docs,
+              url: browserClient.getPage().url(),
+            };
           }
           case 'sei_open_process': {
             const processNumber = args.process_number as string;
-            const ok = await session.client.openProcess(processNumber);
-            return { success: ok, process_number: processNumber, url: session.client.getBrowserClient()?.getPage().url() };
+            await ensureProcessOpen(session, processNumber);
+            return { success: true, process_number: processNumber, url: session.client.getBrowserClient()?.getPage().url() };
           }
           case 'sei_create_process': {
             const options: CreateProcessOptions = {
@@ -352,19 +483,28 @@ export class SeiPlaywrightManager {
             const includeHistory = (args.include_history as boolean | undefined) ?? true;
             const includeDocuments = (args.include_documents as boolean | undefined) ?? true;
 
+            // Cache: status do processo
+            const cacheKey = `status:${processNumber}:${includeHistory}:${includeDocuments}`;
+            const cached = getCached<{ process: unknown; andamentos: unknown[]; documents: unknown[] }>(session, cacheKey);
+            if (cached) return cached;
+
             const details = await browserClient.getProcessDetails(processNumber);
             const andamentos = includeHistory ? await session.client.listAndamentos(processNumber) : [];
             const documents = includeDocuments
               ? (await (async () => {
-                await session.client.openProcess(processNumber);
+                await ensureProcessOpen(session, processNumber);
                 return session.client.listDocuments();
               })())
               : [];
 
-            return { process: details, andamentos, documents };
+            const result = { process: details, andamentos, documents };
+            setCache(session, cacheKey, result, 30000);
+            return result;
           }
           case 'sei_forward_process': {
             const processNumber = args.process_number as string;
+            invalidateProcessCache(session, processNumber);
+            session.currentProcessNumber = undefined;
             const options: ForwardOptions = {
               unidadesDestino: [args.target_unit as string],
               manterAberto: (args.keep_open as boolean | undefined) ?? false,
@@ -397,9 +537,15 @@ export class SeiPlaywrightManager {
           // === DOCUMENTOS ===
           case 'sei_list_documents': {
             const processNumber = args.process_number as string;
-            await session.client.openProcess(processNumber);
+            const docCacheKey = `docs:${processNumber}`;
+            const cachedDocs = getCached<{ process_number: string; documents: unknown[] }>(session, docCacheKey);
+            if (cachedDocs) return cachedDocs;
+
+            await ensureProcessOpen(session, processNumber);
             const docs = await session.client.listDocuments();
-            return { process_number: processNumber, documents: docs };
+            const docResult = { process_number: processNumber, documents: docs };
+            setCache(session, docCacheKey, docResult, 60000);
+            return docResult;
           }
           case 'sei_get_document': {
             const docId = args.document_id as string;
@@ -408,6 +554,7 @@ export class SeiPlaywrightManager {
           }
           case 'sei_create_document': {
             const processNumber = args.process_number as string;
+            invalidateProcessCache(session, processNumber);
             const options: CreateDocumentOptions = {
               tipo: 'G',
               idSerie: args.document_type as string,
@@ -493,8 +640,8 @@ export class SeiPlaywrightManager {
             if (!browserClient) throw new Error('Browser client não disponível');
             const processNumber = args.process_number as string;
             const outputPath = args.output_path as string | undefined;
-            const includeAttachments = (args.include_attachments as boolean | undefined) ?? true;
-            const result = await browserClient.downloadProcess(processNumber, includeAttachments, outputPath);
+            const format = (args.format as 'zip' | 'pdf' | undefined) ?? 'zip';
+            const result = await browserClient.downloadProcess(processNumber, format, outputPath);
             return result;
           }
           case 'sei_download_document': {
@@ -507,12 +654,12 @@ export class SeiPlaywrightManager {
           // === ANOTAÇÕES ===
           case 'sei_list_annotations': {
             if (!browserClient) throw new Error('Browser client não disponível');
-            await session.client.openProcess(args.process_number as string);
+            await ensureProcessOpen(session, args.process_number as string);
             return browserClient.listAnnotations();
           }
           case 'sei_add_annotation': {
             if (!browserClient) throw new Error('Browser client não disponível');
-            await session.client.openProcess(args.process_number as string);
+            await ensureProcessOpen(session, args.process_number as string);
             const ok = await browserClient.addAnnotation(args.text as string, (args.prioridade as 'normal' | 'alta' | undefined) ?? 'normal');
             return { success: ok };
           }
@@ -570,13 +717,13 @@ export class SeiPlaywrightManager {
           }
           case 'sei_add_marker': {
             if (!browserClient) throw new Error('Browser client não disponível');
-            await session.client.openProcess(args.process_number as string);
+            await ensureProcessOpen(session, args.process_number as string);
             const ok = await browserClient.addMarker(args.marker as string, args.text as string | undefined);
             return { success: ok };
           }
           case 'sei_remove_marker': {
             if (!browserClient) throw new Error('Browser client não disponível');
-            await session.client.openProcess(args.process_number as string);
+            await ensureProcessOpen(session, args.process_number as string);
             const ok = await browserClient.removeMarker(args.marker as string);
             return { success: ok };
           }
@@ -584,7 +731,7 @@ export class SeiPlaywrightManager {
           // === PRAZOS ===
           case 'sei_set_deadline': {
             if (!browserClient) throw new Error('Browser client não disponível');
-            await session.client.openProcess(args.process_number as string);
+            await ensureProcessOpen(session, args.process_number as string);
             const ok = await browserClient.setDeadline(args.days as number, (args.tipo as 'util' | 'corrido' | undefined) ?? 'util');
             return { success: ok };
           }
@@ -736,7 +883,51 @@ export class SeiPlaywrightManager {
           }
           case 'sei_snapshot': {
             if (!browserClient) throw new Error('Browser client não disponível');
-            const snap = await browserClient.snapshot((args.include_hidden as boolean | undefined) ?? false);
+            const scope = (args.scope as string) ?? 'full';
+            const maxLength = (args.max_length as number | undefined) ?? 50000;
+            const includeHidden = (args.include_hidden as boolean | undefined) ?? false;
+
+            let snap: string;
+
+            if (scope === 'tree' || scope === 'view') {
+              // Capturar snapshot de iframe específico
+              const frameName = scope === 'tree' ? 'ifrArvore' : 'ifrVisualizacao';
+              const frame = page?.frame(frameName);
+              if (frame) {
+                // Usar accessibility snapshot do frame
+                const tree = await frame.locator('body').first().evaluate((el) => el.innerText);
+                // Tentar ARIA snapshot via page accessibility
+                try {
+                  const ariaTree = await (frame as any).accessibility?.snapshot({ interestingOnly: !includeHidden });
+                  snap = ariaTree ? JSON.stringify(ariaTree, null, 2) : tree;
+                } catch {
+                  // Fallback: extrair texto estruturado do frame
+                  snap = await frame.evaluate(() => {
+                    const items: string[] = [];
+                    document.querySelectorAll('a, button, input, select, [role]').forEach((el) => {
+                      const tag = el.tagName.toLowerCase();
+                      const role = el.getAttribute('role') || tag;
+                      const text = (el as HTMLElement).innerText?.trim()?.slice(0, 200) || el.getAttribute('title') || el.getAttribute('aria-label') || '';
+                      if (text) items.push(`[${role}] ${text}`);
+                    });
+                    return items.join('\n');
+                  });
+                }
+              } else {
+                snap = `Frame "${frameName}" não encontrado na página atual`;
+              }
+            } else if (scope === 'main') {
+              // Capturar snapshot da página principal sem iframes
+              snap = await browserClient.snapshot(includeHidden);
+            } else {
+              // full: snapshot completo
+              snap = await browserClient.snapshot(includeHidden);
+            }
+
+            // Pós-processamento: limpar e truncar
+            snap = cleanSnapshot(snap);
+            snap = truncateSnapshot(snap, maxLength);
+
             try {
               return JSON.parse(snap);
             } catch {
@@ -762,6 +953,10 @@ export class SeiPlaywrightManager {
             };
             const path2 = map[target] ?? target;
             await browserClient.navigate(path2);
+            // Esperar DOM carregado para navegação mais estável
+            await page!.waitForLoadState('domcontentloaded');
+            // Limpar currentProcessNumber ao navegar para outra página
+            session.currentProcessNumber = undefined;
             return { success: true, url: browserClient.getPage().url() };
           }
           case 'sei_click': {

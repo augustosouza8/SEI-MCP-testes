@@ -188,6 +188,32 @@ interface DocumentoBloco {
     IdProtocolo: string;
     ProtocoloFormatado: string;
 }
+interface ResilienceConfig {
+    /** Timeout curto para fail-fast antes de tentar próximo método (ms) */
+    failFastTimeout?: number;
+    /** Número máximo de retries para erros transitórios */
+    maxRetries?: number;
+    /** Backoff base entre retries (ms), cresce exponencialmente */
+    retryBackoff?: number;
+    /** Execução especulativa: roda script e agent em paralelo */
+    speculative?: boolean;
+}
+interface AgentFallbackConfig {
+    /** Ativa agent fallback via Claude API */
+    enabled?: boolean;
+    /** Anthropic API key (ou usa ANTHROPIC_API_KEY do env) */
+    apiKey?: string;
+    /** Modelo a usar */
+    model?: string;
+    /** Max tokens na resposta */
+    maxTokens?: number;
+}
+interface SelectorStoreEntry {
+    discoveredSelector: string;
+    discoveredAt: string;
+    successCount: number;
+    lastSuccess: string;
+}
 /** Configuração do SEI Client */
 interface SEIConfig {
     /** URL base do SEI (ex: https://sei.mg.gov.br) */
@@ -227,6 +253,10 @@ interface SEIConfig {
         /** Manter navegador aberto após close() - útil para sessões longas */
         keepAlive?: boolean;
     };
+    /** Configuração de resiliência (fail-fast, retry, speculative) */
+    resilience?: ResilienceConfig;
+    /** Configuração de agent fallback (Claude API) para self-healing */
+    agentFallback?: AgentFallbackConfig;
 }
 /** Opções para criação de processo */
 interface CreateProcessOptions {
@@ -402,6 +432,10 @@ declare class SEIBrowserClient {
     private page;
     /** Endpoint CDP para reconexão */
     private cdpEndpoint;
+    /** Resiliência */
+    private resilience;
+    private selectorStore;
+    private agentFallback;
     constructor(config: SEIConfig);
     /** URL base do SEI */
     private get baseUrl();
@@ -497,19 +531,32 @@ declare class SEIBrowserClient {
     private getViewFrame;
     /** Obtem frame locator para editor */
     private getEditorFrame;
-    /** Clica em elemento: tenta ARIA primeiro, fallback CSS */
+    /**
+     * Gera chave para o selector store.
+     */
+    private getSelectorKey;
+    /**
+     * Tenta executar ação via CSS selector no target (Page ou FrameLocator).
+     */
+    private executeCssAction;
+    /**
+     * Tenta agent fallback para descobrir seletor.
+     * Só funciona com target = Page (não FrameLocator).
+     */
+    private tryAgentFallback;
+    /** Clica em elemento: ARIA → CSS → Store → Agent */
     private clickSmart;
-    /** Preenche campo: tenta ARIA primeiro, fallback CSS */
+    /** Preenche campo: ARIA → CSS → Store → Agent */
     private fillSmart;
-    /** Seleciona opção: tenta ARIA primeiro, fallback CSS */
+    /** Seleciona opção: ARIA → CSS → Store → Agent */
     private selectSmart;
-    /** Marca checkbox/radio: tenta ARIA primeiro, fallback CSS */
+    /** Marca checkbox/radio: ARIA → CSS → Store → Agent */
     private checkSmart;
-    /** Aguarda elemento: tenta ARIA primeiro, fallback CSS */
+    /** Aguarda elemento: ARIA → CSS → Store */
     private waitForSmart;
-    /** Obtém texto de elemento: tenta ARIA primeiro, fallback CSS */
+    /** Obtém texto de elemento: ARIA → CSS → Store */
     private getTextSmart;
-    /** Verifica se elemento existe: tenta ARIA primeiro, fallback CSS */
+    /** Verifica se elemento existe: ARIA → CSS → Store */
     private existsSmart;
     /** Realiza login no SEI */
     login(usuario?: string, senha?: string, orgao?: string): Promise<boolean>;
@@ -1970,4 +2017,53 @@ declare function decryptJson<T = unknown>(encryptedData: EncryptedData, masterPa
  */
 declare function generateSecurePassword(length?: number): string;
 
-export { type APIConfig, type Andamento, type Assinatura, type Assunto, type AtributoAndamento, type BlockOptions, type Bloco, type BlocoAssinatura, type Campo, type CreateDocumentOptions, type CreateProcessOptions, type DaemonConfig, type Destinatario, type Documento, type DocumentoBloco, type DocumentoDownload, type DocumentoNovo, type EmailConfig, type EnrichedItem, type ForwardOptions, type Interessado, type NivelAcesso, type NotificationConfig, type NotificationPayload, type Observacao, type PrazoInfo, type Procedimento, type ProcedimentoAnexado, type ProcedimentoRelacionado, type ProcessoRecebido, type Remetente, type RetornoConsultaDocumento, type RetornoConsultaProcedimento, type RetornoGerarProcedimento, type RetornoInclusaoDocumento, SEIBrowserClient, SEIClient, type SEIClientMode, type SEIClientOptions, type SEIConfig, type SEICredentials, SEIDaemon, SEINotificationService, SEIService, SEIServiceAPI, type SEIServiceConfig, SEISoapClient, type SEIUserConfig, SEIUserManager, SEIWatcher, SEI_SELECTORS, type SOAPAuth, type SOAPConfig, type Serie, type TipoDocumento, type TipoProcedimento, type Unidade, type Usuario, type WatchEvent, type WatchItem, type WatchType, type WatcherOptions, decrypt, decryptJson, SEIClient as default, encrypt, generateSecurePassword };
+/**
+ * Persistência de seletores descobertos pelo agent (self-healing)
+ */
+declare class SelectorStore {
+    private filePath;
+    private cache;
+    private dirty;
+    constructor(storePath?: string);
+    get(key: string): string | null;
+    set(key: string, selector: string): void;
+    recordSuccess(key: string): void;
+    prune(maxAge?: number): number;
+    get size(): number;
+    private load;
+    private save;
+    private saveTimer;
+    private debounceSave;
+}
+
+/**
+ * Motor de resiliência: fail-fast, retry com backoff, classificação de erros
+ */
+
+declare function resolveResilienceConfig(config?: ResilienceConfig): Required<ResilienceConfig>;
+type ErrorKind = 'transient' | 'selector_not_found' | 'permanent';
+declare function classifyError(error: unknown): ErrorKind;
+declare function failFast<T>(fn: () => Promise<T>, timeout: number): Promise<T>;
+interface RetryOptions {
+    maxRetries: number;
+    backoff: number;
+    retryOn?: ErrorKind[];
+}
+declare function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions): Promise<T>;
+
+/**
+ * Agent Fallback via Claude API para SEI
+ */
+
+/** Tipo semântico simplificado para seletores SEI */
+interface SelectorDescription {
+    role: string;
+    name: string | RegExp;
+    cssFallback?: string;
+}
+interface AgentFallbackClient {
+    askForSelector(page: Page, description: string, context: string, original: SelectorDescription): Promise<string | null>;
+}
+declare function createAgentFallback(config: AgentFallbackConfig): AgentFallbackClient | null;
+
+export { type APIConfig, type AgentFallbackConfig, type Andamento, type Assinatura, type Assunto, type AtributoAndamento, type BlockOptions, type Bloco, type BlocoAssinatura, type Campo, type CreateDocumentOptions, type CreateProcessOptions, type DaemonConfig, type Destinatario, type Documento, type DocumentoBloco, type DocumentoDownload, type DocumentoNovo, type EmailConfig, type EnrichedItem, type ForwardOptions, type Interessado, type NivelAcesso, type NotificationConfig, type NotificationPayload, type Observacao, type PrazoInfo, type Procedimento, type ProcedimentoAnexado, type ProcedimentoRelacionado, type ProcessoRecebido, type Remetente, type ResilienceConfig, type RetornoConsultaDocumento, type RetornoConsultaProcedimento, type RetornoGerarProcedimento, type RetornoInclusaoDocumento, SEIBrowserClient, SEIClient, type SEIClientMode, type SEIClientOptions, type SEIConfig, type SEICredentials, SEIDaemon, SEINotificationService, SEIService, SEIServiceAPI, type SEIServiceConfig, SEISoapClient, type SEIUserConfig, SEIUserManager, SEIWatcher, SEI_SELECTORS, type SOAPAuth, type SOAPConfig, SelectorStore, type SelectorStoreEntry, type Serie, type TipoDocumento, type TipoProcedimento, type Unidade, type Usuario, type WatchEvent, type WatchItem, type WatchType, type WatcherOptions, classifyError, createAgentFallback, decrypt, decryptJson, SEIClient as default, encrypt, failFast, generateSecurePassword, resolveResilienceConfig, withRetry };
