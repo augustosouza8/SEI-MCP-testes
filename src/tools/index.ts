@@ -16,6 +16,7 @@ const SMART_WAIT_MAX_MS = parseInt(process.env.SEI_MCP_MAX_WAIT_MS || '5000', 10
 const SMART_WAIT_TOOLS = [
   'sei_login',
   'sei_search_process',
+  'sei_search_and_open',
   'sei_create_document',
   'sei_sign_document',
   'sei_forward_process',
@@ -52,7 +53,7 @@ export const schemas = {
 
   sei_download_process: z.object({
     process_number: z.string().describe('Número do processo (ex: 12345.678901/2024-00)'),
-    include_attachments: z.boolean().default(true).describe('Incluir anexos'),
+    format: z.enum(['zip', 'pdf']).default('zip').describe('Formato: zip (padrão, preserva formatos originais) ou pdf'),
     output_path: z.string().optional().describe('Caminho para salvar o arquivo'),
   }),
 
@@ -111,7 +112,7 @@ export const tools = [
   },
   {
     name: 'sei_download_process',
-    description: 'Baixa processo completo como PDF, opcionalmente incluindo anexos.',
+    description: 'Baixa processo completo em ZIP (padrão, preserva formatos) ou PDF.',
     inputSchema: zodToJsonSchema(schemas.sei_download_process),
   },
   {
@@ -173,6 +174,27 @@ const WINDOW_TOOLS = [
   'sei_get_window_state',
   'sei_set_window_bounds',
 ];
+
+// Serialize ARIA accessibility tree for Claude analysis
+function serializeAriaTree(node: Record<string, unknown>, indent = 0): string {
+  const lines: string[] = [];
+  const prefix = '  '.repeat(indent);
+  const role = node.role as string || '';
+  const name = node.name as string || '';
+
+  if (name) lines.push(`${prefix}- ${role} "${name}"`);
+  else if (role) lines.push(`${prefix}- ${role}`);
+
+  if (node.value) lines.push(`${prefix}  value: "${node.value}"`);
+
+  const children = node.children as Record<string, unknown>[] | undefined;
+  if (children) {
+    for (const child of children) {
+      lines.push(serializeAriaTree(child, indent + 1));
+    }
+  }
+  return lines.join('\n');
+}
 
 // Handler das ferramentas
 export async function handleTool(
@@ -276,6 +298,48 @@ export async function handleTool(
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Erro desconhecido';
       logger.error(`Tool error (playwright): ${name}`, { error: message });
+
+      // Agent fallback: enrich error with screenshot + ARIA for Claude to analyze
+      try {
+        const fallbackSession = pwManager.getActiveSession(sessionId);
+        if (fallbackSession) {
+          const browserClient = fallbackSession.client.getBrowserClient();
+          const page = browserClient?.getPage();
+          if (page) {
+            const [screenshotB64, ariaSnap] = await Promise.all([
+              page.screenshot({ type: 'jpeg', quality: 60 }).then((b: Buffer) => b.toString('base64')).catch(() => null),
+              page.accessibility.snapshot({ interestingOnly: true }).catch(() => null),
+            ]);
+
+            const content: ToolResult['content'] = [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  error: message,
+                  tool: name,
+                  args: forwardedArgs,
+                  _fallback: 'visual_analysis',
+                  help: 'Analise o screenshot e ARIA tree abaixo para identificar o problema e sugerir próximos passos.',
+                }, null, 2),
+              },
+            ];
+
+            if (screenshotB64) {
+              content.push({ type: 'image', data: screenshotB64, mimeType: 'image/jpeg' });
+            }
+
+            if (ariaSnap) {
+              const ariaStr = serializeAriaTree(ariaSnap);
+              content.push({ type: 'text', text: `ARIA Tree:\n${ariaStr.slice(0, 15000)}` });
+            }
+
+            return { content, isError: true };
+          }
+        }
+      } catch (fallbackErr) {
+        logger.warn('Agent fallback enrichment failed', { error: String(fallbackErr) });
+      }
+
       return {
         content: [{ type: 'text', text: `Erro ao executar ${name}: ${message}` }],
         isError: true,

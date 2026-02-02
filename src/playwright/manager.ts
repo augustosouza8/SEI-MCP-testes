@@ -237,6 +237,11 @@ export class SeiPlaywrightManager {
     return null;
   }
 
+  /** Public accessor for fallback enrichment (screenshot + ARIA on error) */
+  getActiveSession(sessionId?: string): SessionState | null {
+    return this.getSession(sessionId);
+  }
+
   private async runExclusive<T>(sessionId: string, fn: (s: SessionState) => Promise<T>): Promise<T> {
     const s = this.sessions.get(sessionId);
     if (!s) throw new Error(`Sessão não encontrada: ${sessionId}`);
